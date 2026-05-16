@@ -21,7 +21,7 @@
 **Integraciones**
 > AI agents
 > Whatsapp API
-> Pasarela de pagos IziPay
+> Pasarela de pagos MercadoPago
 
 ---
 
