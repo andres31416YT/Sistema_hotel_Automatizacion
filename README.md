@@ -28,6 +28,7 @@
 ---
 
 **Servicios internos**
+> Docker
 > Ollama
 > Ai model Qwen2.5-3B-Instruct
 ---
@@ -48,6 +49,10 @@
 ---
 
 **Repositorios**
-> Qwen2.5-3B-Instruct: https://huggingface.co/Qwen/Qwen2.5-3B-Instruct
+
+| Herramienta | Docker | Link |
+|-----------|-----------|-----------|
+| Ollama    | ollama/ollama    | -    |
+| Qwen2.5-3B-Instruct    | -    |  https://huggingface.co/Qwen/Qwen2.5-3B-Instruct    |
 
 ---
