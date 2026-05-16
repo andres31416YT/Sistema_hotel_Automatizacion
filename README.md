@@ -19,9 +19,23 @@
 ---
 
 **Integraciones**
-> AI agents Qwen2.5-3B-Instruct
+> AI agents
 > Whatsapp API
-> Pasarela de pagos MercadoPago
+> Pasarela de pagos
+
+---
+
+---
+
+**Servicios internos**
+> Ollama
+> Ai model Qwen2.5-3B-Instruct
+---
+
+---
+
+**Servicios externos**
+> MercadoPago
 
 ---
 
