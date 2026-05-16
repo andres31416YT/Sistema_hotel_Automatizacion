@@ -31,6 +31,7 @@
 > Docker
 > Ollama
 > Ai model Qwen2.5-3B-Instruct
+> Whatsapp Webhook
 ---
 
 ---
