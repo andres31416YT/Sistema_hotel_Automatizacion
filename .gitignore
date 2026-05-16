@@ -1,0 +1,9 @@
+# Credenciales bloqueadas
+.env
+*.env
+.env.*
+# Credenciales permitidas example
+!.env.example
+!.env.example.*
+
+
