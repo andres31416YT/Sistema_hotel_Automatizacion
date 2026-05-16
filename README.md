@@ -4,7 +4,7 @@
 
 **Descripcion**
 > Sistema de automatizacion de procesos inteligentes para hoteles
-
+> Epecializado en proceso de Reservas de habitaciones
 ---
 
 ---
