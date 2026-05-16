@@ -42,6 +42,12 @@
 
 ---
 
+**Servicios puente(internos que exponen al publico)**
+> Ngrok
+---
+
+---
+
 **Lenguaje de programacion**
 > Python
 ---
