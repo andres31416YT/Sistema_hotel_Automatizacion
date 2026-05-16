@@ -19,7 +19,7 @@
 ---
 
 **Integraciones**
-> AI agents
+> AI agents Qwen2.5-3B-Instruct
 > Whatsapp API
 > Pasarela de pagos MercadoPago
 
@@ -29,4 +29,11 @@
 
 **Lenguaje de programacion**
 > Python
+---
+
+---
+
+**Repositorios**
+> Qwen2.5-3B-Instruct: https://huggingface.co/Qwen/Qwen2.5-3B-Instruct
+
 ---
