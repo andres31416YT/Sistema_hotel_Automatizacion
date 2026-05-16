@@ -9,6 +9,13 @@
 
 ---
 
+**Diagrama**
+![Diagrama](diagrams/Automatizacion.png)
+
+---
+
+---
+
 **Caracteristicas**
 * Agenda
 * Comprueba
