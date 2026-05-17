@@ -4,6 +4,9 @@ Uses McpWhatsapp and McpDatabase to get sender information.
 """
 
 class IdentifierAgent:
+    ROLE = "Identifica al huésped mediante su número de WhatsApp y recupera "
+    ROLE += "su perfil y contexto desde la base de datos hotelera."
+
     def __init__(self, mcp_servers):
         """
         Initialize the Identifier agent.

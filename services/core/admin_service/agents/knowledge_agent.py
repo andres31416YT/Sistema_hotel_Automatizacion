@@ -4,6 +4,9 @@ Uses McpRag to search for relevant information.
 """
 
 class KnowledgeAgent:
+    ROLE = "Busca información en la base de conocimientos RAG: "
+    ROLE += "políticas del hotel, FAQ, servicios, horarios y documentos internos."
+
     def __init__(self, mcp_servers):
         """
         Initialize the KnowledgeAgent.

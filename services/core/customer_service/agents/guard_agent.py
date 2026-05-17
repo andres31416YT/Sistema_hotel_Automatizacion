@@ -8,6 +8,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 class GuardAgent:
+    ROLE = "Valida cada mensaje entrante del huésped: detecta spam, fraude y contenido malicioso. "
+    ROLE += "Bloquea remitentes peligrosos. Los administradores tienen inmunidad."
+
     def __init__(self, mcp_servers):
         """
         Initialize the GuardAgent.

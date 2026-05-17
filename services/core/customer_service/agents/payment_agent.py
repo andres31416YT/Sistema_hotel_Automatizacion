@@ -4,6 +4,9 @@ Uses McpPayments to generate links, verify and record payments.
 """
 
 class PaymentAgent:
+    ROLE = "Gestiona el flujo de pagos de reservas: genera links de MercadoPago "
+    ROLE += "para el huésped, consulta el estado del pago y registra la transacción en db_payments."
+
     def __init__(self, mcp_servers):
         """
         Initialize the PaymentAgent.

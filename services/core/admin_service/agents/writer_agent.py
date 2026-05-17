@@ -8,6 +8,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 class WriterAgent:
+    ROLE = "Recibe texto de otros agentes, lo formatea para WhatsApp "
+    ROLE += "(limite de 4096 caracteres, tono cordial) y lo envía al huésped."
+
     def __init__(self, mcp_servers):
         """
         Initialize the WriterAgent.

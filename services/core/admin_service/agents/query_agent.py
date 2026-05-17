@@ -4,6 +4,9 @@ Uses McpDatabase to read and write data.
 """
 
 class QueryAgent:
+    ROLE = "Consulta datos operativos desde la base de datos hotelera: "
+    ROLE += "disponibilidad de habitaciones, perfiles de huéspedes, reservas, check-ins y check-outs."
+
     def __init__(self, mcp_servers):
         """
         Initialize the QueryAgent.
