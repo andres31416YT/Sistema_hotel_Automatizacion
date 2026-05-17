@@ -2,8 +2,10 @@
 .env
 *.env
 .env.*
-# Credenciales permitidas example
+# Credenciales permitidas example (root + servicios)
 !.env.example
 !.env.example.*
+!.env.*.example
+!services/*/.env.example
 
 

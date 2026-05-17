@@ -10,6 +10,7 @@ import httpx
 import redis
 import asyncpg
 from fastapi import FastAPI, Request, HTTPException
+from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -39,9 +40,8 @@ REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
-# ── Almacenamiento en memoria (se reemplaza por DB real mas adelante) ──────────
-_reservas: dict = {}
-# (numero_wa, external_reference) -> {"estado": "pendiente|confirmada|cancelada", ...}
+# ── Autenticacion ──────────────────────────────────────────────────────────────
+from core_auth_settings import is_admin  # noqa: E402
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
@@ -90,6 +90,22 @@ async def health_check():
 
     overall = "healthy" if all(v == "ok" for v in checks.values()) else "degraded"
     return {"status": overall, **checks}
+
+
+# ── Autenticacion de administradores ────────────────────────────────────────────
+
+class AdminCheckRequest(BaseModel):
+    phone: str
+
+
+@app.post("/admin/check", response_model=dict)
+async def admin_check(body: AdminCheckRequest):
+    """
+    Verifica si un numero de WhatsApp pertenece a un administrador.
+    Administradores pueden agregarse/removerse via ADMIN_PHONES en el .env del core.
+    """
+    result = is_admin(body.phone)
+    return {"phone": body.phone, "is_admin": result}
 
 
 # ── Endpoint llamado por system_payment cuando un pago se confirma ─────────────
