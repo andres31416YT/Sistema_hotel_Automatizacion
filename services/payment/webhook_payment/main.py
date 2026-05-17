@@ -23,7 +23,7 @@ MP_WEBHOOK_SECRET = os.getenv("MP_WEBHOOK_SECRET")
 SYSTEM_PAYMENT_URL = os.getenv("SYSTEM_PAYMENT_URL", "http://localhost:8003")
 
 if not MP_WEBHOOK_SECRET:
-    logger.warning("MP_WEBHOOK_SECRET no configurado — validacion de firma desactivada")
+    raise RuntimeError("MP_WEBHOOK_SECRET no configurado — abortando inicio de servicio")
 
 
 def _validate_mercadopago_signature(body: bytes, x_signature: str, x_request_id: str) -> bool:

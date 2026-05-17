@@ -66,8 +66,8 @@ async def whatsapp_webhook(
     # Get the raw body
     body = await request.body()
     
-    # Log the received body (for debugging, be cautious with PII in production)
-    logger.info(f"Received webhook body: {body}")
+    # Log truncated without PII
+    logger.info(f"Received webhook payload ({len(body)} bytes) — signature_ok={bool(x_hub_signature_256)}")
     
     # Verify the signature if we have a secret
     if WHATSAPP_APP_SECRET:

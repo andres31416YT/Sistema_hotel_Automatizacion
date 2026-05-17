@@ -23,25 +23,38 @@ SYSTEM_PAYMENT_URL = os.getenv("SYSTEM_PAYMENT_URL", "http://payment-system:8003
 SYSTEM_WHATSAPP_SENDER_URL = os.getenv("SYSTEM_WHATSAPP_SENDER_URL", "http://whatsapp-sender:8001")
 
 DB_HOTEL = {
-    "host":     os.getenv("DB_HOTEL_HOST", "db_hotel"),
+    "host":     os.getenv("DB_HOTEL_HOST"),
     "port":     int(os.getenv("DB_HOTEL_PORT", 5432)),
-    "user":     os.getenv("DB_HOTEL_USER", "hotel_user"),
-    "password": os.getenv("DB_HOTEL_PASSWORD", "hotel_password"),
-    "database": os.getenv("DB_HOTEL_NAME", "hotel_db"),
+    "user":     os.getenv("DB_HOTEL_USER"),
+    "password": os.getenv("DB_HOTEL_PASSWORD"),
+    "database": os.getenv("DB_HOTEL_NAME"),
 }
+
+if not all([DB_HOTEL["host"], DB_HOTEL["user"], DB_HOTEL["password"], DB_HOTEL["database"]]):
+    raise RuntimeError("Faltan variables de entorno de DB_HOTEL. "
+                        "Verificar DB_HOTEL_HOST, DB_HOTEL_USER, DB_HOTEL_PASSWORD, DB_HOTEL_NAME en el .env")
+
 DB_PAYMENTS = {
-    "host":     os.getenv("DB_PAYMENTS_HOST", "db_payments"),
+    "host":     os.getenv("DB_PAYMENTS_HOST"),
     "port":     int(os.getenv("DB_PAYMENTS_PORT", 5432)),
-    "user":     os.getenv("DB_PAYMENTS_USER", "payments_user"),
-    "password": os.getenv("DB_PAYMENTS_PASSWORD", "payments_password"),
-    "database": os.getenv("DB_PAYMENTS_NAME", "payments_db"),
+    "user":     os.getenv("DB_PAYMENTS_USER"),
+    "password": os.getenv("DB_PAYMENTS_PASSWORD"),
+    "database": os.getenv("DB_PAYMENTS_NAME"),
 }
+
+if not all([DB_PAYMENTS["host"], DB_PAYMENTS["user"], DB_PAYMENTS["password"], DB_PAYMENTS["database"]]):
+    raise RuntimeError("Faltan variables de entorno de DB_PAYMENTS. "
+                        "Verificar DB_PAYMENTS_HOST, DB_PAYMENTS_USER, DB_PAYMENTS_PASSWORD, DB_PAYMENTS_NAME en el .env")
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
 # ── Autenticacion ──────────────────────────────────────────────────────────────
 from core_auth_settings import is_admin  # noqa: E402
+
+# ── Almacenamiento en memoria ───────────────────────────────────────────────────
+_reservas: dict = {}
+_reservas_lock = asyncio.Lock()
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
@@ -131,13 +144,15 @@ async def payment_confirmed(request: Request):
     if not external_reference:
         raise HTTPException(status_code=400, detail="external_reference es obligatorio")
 
-    # Guardar estado del pago
-    if external_reference not in _reservas:
-        _reservas[external_reference] = {}
+    # Guardar estado del pago (protegido contra condiciones de carrera concurrentes)
+    async with _reservas_lock:
+        if external_reference not in _reservas:
+            _reservas[external_reference] = {}
 
-    _reservas[external_reference]["payment_status"] = status
-    _reservas[external_reference]["payment_id"] = payment_id
-    _reservas[external_reference]["estado"] = "confirmada" if status == "approved" else "pendiente"
+        _reservas[external_reference]["payment_status"] = status
+        _reservas[external_reference]["payment_id"] = payment_id
+        _reservas[external_reference]["estado"] = "confirmada" if status == "approved" else "pendiente"
+        estado_final = _reservas[external_reference]["estado"]
 
     if status == "approved":
         # TODO: cuando el core tenga el modelo de BD de reservas, actualizarlo aqui.
@@ -149,7 +164,7 @@ async def payment_confirmed(request: Request):
     return {
         "status": "processed",
         "external_reference": external_reference,
-        "estado": _reservas[external_reference]["estado"],
+        "estado": estado_final,
     }
 
 

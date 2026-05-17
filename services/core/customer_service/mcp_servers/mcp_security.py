@@ -62,9 +62,9 @@ class McpSecurity:
             )
             return False
 
-        print(f"[MCP SECURITY] Blocking sender {sender_id} — reason: {reason}")
+        logger.info(f"[MCP SECURITY] Blocking sender {sender_id} — reason: {reason}")
         return True
 
     def unblock_sender(self, sender_id):
-        print(f"[MCP SECURITY] Unblocking sender {sender_id}")
+        logger.info(f"[MCP SECURITY] Unblocking sender {sender_id}")
         return True

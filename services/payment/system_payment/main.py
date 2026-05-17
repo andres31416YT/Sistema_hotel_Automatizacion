@@ -30,10 +30,12 @@ REDIS_HOST     = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT     = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
-CORE_URL       = os.getenv("CORE_URL", "http://core:8080")
+CORE_URL       = os.getenv("CORE_URL")
+if not CORE_URL:
+    raise RuntimeError("CORE_URL no configurado — abortando inicio de servicio")
 
 if not MP_ACCESS_TOKEN:
-    logger.error("MP_ACCESS_TOKEN no configurado")
+    raise RuntimeError("MP_ACCESS_TOKEN no configurado — abortando inicio de servicio")
 
 # ── Conexiones ───────────────────────────────────────────────────────────────
 redis_client: aioredis.Redis = None
