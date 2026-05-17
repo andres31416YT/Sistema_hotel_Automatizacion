@@ -16,7 +16,7 @@ app = FastAPI()
 
 # ── Variables de entorno ─────────────────────────────────────────────────────
 MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN")
-MP_API_URL      = os.getenv("MP_API_URL", "https://api.mercadopago.com/v1")
+MP_API_URL      = os.getenv("MP_API_URL", "https://api.mercadopago.com")
 MP_SANDBOX      = os.getenv("MP_SANDBOX", "true").lower() == "true"
 SYSTEM_PAYMENT_URL = os.getenv("SYSTEM_PAYMENT_URL", "http://localhost:8003")
 
@@ -108,7 +108,7 @@ async def save_transaction(payment_data: dict):
         await conn.execute(
             """
             INSERT INTO transacciones (
-                payment_id, status, status_detail, monto, moneda,
+                payment_id, status, status_detail, amount, currency,
                 external_reference, payer_email, payment_method,
                 mp_preference_id, date_approved, fecha_registro
             )
@@ -166,39 +166,58 @@ async def process_notification(raw: str):
     """
     Procesa una notificacion de la cola Redis mp_payment_notifications.
     1. Parsea el payload
-    2. Consulta el estado real en MercadoPago
+    2. Consulta el estado real en MercadoPago (con fallback a pending)
     3. Guarda en DB Payments
     4. Actualiza cache Redis
-    5. Notifica al System Core
+    5. Notifica al Core si fue aprobado
     """
+    # ── 1. Parsear ──────────────────────────────────────────────────────────────
     try:
-        data       = json.loads(raw)
-        payload    = data.get("payload", {})
-        topic      = payload.get("type")
-        data_id    = payload.get("data", {}).get("id")
+        data    = json.loads(raw)
+        payload = data.get("payload", {})
+        topic   = payload.get("type")
+        data_id = payload.get("data", {}).get("id")
+    except Exception as e:
+        logger.error(f"JSON invalido en notificacion: {e}")
+        return
 
-        if topic != "payment" or not data_id:
-            logger.info(f"Notificacion ignorada — tipo: {topic}")
-            return
+    if topic != "payment" or not data_id:
+        logger.info(f"Notificacion ignorada — tipo: {topic}")
+        return
 
-        logger.info(f"Procesando pago — payment_id: {data_id}")
+    logger.info(f"Procesando pago — payment_id: {data_id}")
 
-        # Consultar estado real en MercadoPago
+    # ── 2. Consultar estado en MP (con fallback) ────────────────────────────────
+    payment_data: dict = {}
+    try:
         payment_data = await fetch_payment_from_mp(str(data_id))
+    except Exception as e:
+        logger.warning(
+            f"No se pudo consultar MP para payment_id={data_id}: {e}. "
+            "Guardando registro como 'pending' en DB."
+        )
+        payment_data = {
+            "id": data_id,
+            "status": "pending",
+            "status_detail": "pendiente_de_confirmacion_mp",
+            "transaction_amount": 0.0,
+            "currency_id": "PEN",
+            "external_reference": None,
+            "payer": {},
+        }
 
-        # Guardar en DB Transaccional PostgreSQL Payments
+    # ── 3–5. Guardar, actualizar cache, notificar ───────────────────────────────
+    try:
         status, external_ref = await save_transaction(payment_data)
 
-        # Actualizar cache Redis si corresponde
         if external_ref:
             await update_payment_cache(external_ref, status)
 
-        # Solo notificar al Core si el pago fue aprobado
         if status == "approved":
             await notify_core(external_ref, status, str(data_id))
 
     except Exception as e:
-        logger.error(f"Error procesando notificacion: {e}")
+        logger.error(f"Error guardando notificacion payment_id={data_id}: {e}")
 
 
 # ── Worker: consume cola Redis ───────────────────────────────────────────────

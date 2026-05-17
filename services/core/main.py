@@ -5,10 +5,13 @@ Expone endpoints publicos y recibe notificaciones de pagos desde system_payment.
 
 import os
 import json
+import asyncio
 import logging
 import httpx
 import redis
+import redis.asyncio as aioredis
 import asyncpg
+from datetime import datetime, timezone
 from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 
@@ -144,6 +147,30 @@ async def payment_confirmed(request: Request):
     if not external_reference:
         raise HTTPException(status_code=400, detail="external_reference es obligatorio")
 
+    # Actualizar cache de preferencia de pago (clave: payment_preference:{external_reference})
+    # Nota: payment_preference guarda amount, currency, preference_id, status, created_at.
+    # El numero de telefono del huesped esta en otra clave (payment:{id} o perfil de usuario).
+    try:
+        r_cache = aioredis.Redis(host=REDIS_HOST, port=REDIS_PORT,
+                                 password=REDIS_PASSWORD, decode_responses=True,
+                                 socket_connect_timeout=3)
+
+        pref_key = f"payment_preference:{external_reference}"
+        exists = await r_cache.exists(pref_key)
+        logger.info(f"[CORE] Redis update — key={pref_key} exists={exists} → {status}")
+        if exists:
+            await r_cache.hset(pref_key, "status", status)
+            if status == "approved":
+                await r_cache.hset(pref_key, "date_approved",
+                                   datetime.now(timezone.utc).isoformat())
+                logger.info(f"[CORE] Redis date_approved actualizado en {pref_key}")
+            ttl = await r_cache.ttl(pref_key)
+            if ttl == -1:
+                await r_cache.expire(pref_key, int(os.getenv("REDIS_TTL_PAYMENT", 900)))
+        await r_cache.close()
+    except Exception as e:
+        logger.warning(f"[CORE] Redis cache fallo: {e}")
+
     # Guardar estado del pago (protegido contra condiciones de carrera concurrentes)
     async with _reservas_lock:
         if external_reference not in _reservas:
@@ -158,7 +185,21 @@ async def payment_confirmed(request: Request):
         # TODO: cuando el core tenga el modelo de BD de reservas, actualizarlo aqui.
         logger.info(f"[CORE] Reserva {external_reference} CONFIRMADA por pago {payment_id}")
 
-        # Enviar mensaje de confirmacion por WhatsApp
+        # Actualizar cache de preferencia de pago (si existe la clave)
+    try:
+        r_cache = redis.Redis(host=REDIS_HOST, port=REDIS_PORT,
+                              password=REDIS_PASSWORD, decode_responses=True)
+        cache_key = f"payment_preference:{external_reference}"
+        if await r_cache.exists(cache_key):
+            await r_cache.hset(cache_key, "status", status)
+            ttl = await r_cache.ttl(cache_key)
+            if ttl == -1:
+                await r_cache.expire(cache_key, int(os.getenv("REDIS_TTL_PAYMENT", 900)))
+        r_cache.close()
+    except Exception:
+        pass  # No bloquear el flujo si Redis no esta disponible
+
+    # Enviar mensaje de confirmacion por WhatsApp
         await _enviar_confirmacion_whatsapp(external_reference, payment_id)
 
     return {
