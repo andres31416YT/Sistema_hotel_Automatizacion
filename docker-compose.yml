@@ -1,25 +1,22 @@
 version: '3.8'
 
 services:
-  # Ngrok tunnel for WhatsApp webhook
+  # Ngrok tunnel for WhatsApp webhook (no env_file: reads NGROK_AUTHTOKEN inline)
   ngrok-whatsapp:
     image: ngrok/ngrok:3
     command: http -host-header=rewrite whatsapp-webhook:8000
-    environment:
-      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    env_file:
+      - ./services/ngrok/tunel_wh_whatsapp/.env
     ports:
-      - "4040:4040"  # Ngrok web interface
-    # Note: The actual tunnel URL is provided by ngrok and must be configured in WhatsApp Business API
+      - "4040:4040"
 
-  # Ngrok tunnel for Mercado Pago webhook
   ngrok-mercadopago:
     image: ngrok/ngrok:3
-    command: http -host-header=rewrite payment-webhook:8000
-    environment:
-      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    command: http -host-header=rewrite payment-webhook:8002
+    env_file:
+      - ./services/ngrok/tunel_wh_mercado_pago/.env
     ports:
-      - "4041:4040"  # Ngrok web interface
-    # Note: The actual tunnel URL is provided by ngrok and must be configured in Mercado Pago
+      - "4041:4040"
 
   # WhatsApp webhook receiver: receives messages from WhatsApp and enqueues to Redis
   whatsapp-webhook:
@@ -41,8 +38,9 @@ services:
       - ./services/whatsapp/system_whatsapp_sender/.env
     depends_on:
       - redis
-      - core  # To get the configuration and possibly trigger sending via core? Actually, the sender will read from redis independently.
-    # Note: In production, the sender would be triggered by the core service via redis queues (e.g., an outbound queue)
+      - core
+    ports:
+      - "8001:8001"
 
   # Payment webhook receiver: receives notifications from Mercado Pago and enqueues to Redis
   payment-webhook:
@@ -64,7 +62,9 @@ services:
       - ./services/payment/system_payment/.env
     depends_on:
       - redis
-      - core  # To get configuration and possibly to trigger messages via core
+      - core
+    ports:
+      - "8003:8003"
 
   # System Core: orchestrates AI agents and MCP servers
   core:
@@ -79,6 +79,8 @@ services:
       - db_payments
       - db_rag
       - ai
+    ports:
+      - "8080:8080"
 
   # AI container: runs Ollama with the Qwen2.5-3B-Instruct model
   ai:
