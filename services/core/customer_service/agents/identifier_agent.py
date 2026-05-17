@@ -3,9 +3,11 @@ AI Agent Identifier - Identifies who sent the message
 Uses McpWhatsapp and McpDatabase to get sender information.
 """
 
+from core.prompts.customer_service.agents import PROMPT_IDENTIFIER  # noqa
+
+
 class IdentifierAgent:
-    ROLE = "Identifica al huésped mediante su número de WhatsApp y recupera "
-    ROLE += "su perfil y contexto desde la base de datos hotelera."
+    ROLE = PROMPT_IDENTIFIER
 
     def __init__(self, mcp_servers):
         """

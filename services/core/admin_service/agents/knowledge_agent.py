@@ -3,13 +3,16 @@ AI Agent KnowledgeAgent - Consults the RAG (Retrieval Augmented Generation)
 Uses McpRag to search for relevant information.
 """
 
+from core.prompts.admin_service.agents import PROMPT_KNOWLEDGE  # noqa
+
+
 class KnowledgeAgent:
-    ROLE = "Busca información en la base de conocimientos RAG: "
-    ROLE += "políticas del hotel, FAQ, servicios, horarios y documentos internos."
+    ROLE = PROMPT_KNOWLEDGE
 
     def __init__(self, mcp_servers):
         """
-        Initialize the KnowledgeAgent.
+        Initialize the KnowledgeAgent (Admin Service).
+        """
         
         Args:
             mcp_servers: Dictionary of available MCP servers

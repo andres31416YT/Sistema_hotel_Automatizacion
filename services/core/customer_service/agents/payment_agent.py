@@ -3,9 +3,11 @@ AI Agent PaymentAgent - Responsible for reviewing and handling payments
 Uses McpPayments to generate links, verify and record payments.
 """
 
+from core.prompts.customer_service.agents import PROMPT_PAYMENT  # noqa
+
+
 class PaymentAgent:
-    ROLE = "Gestiona el flujo de pagos de reservas: genera links de MercadoPago "
-    ROLE += "para el huésped, consulta el estado del pago y registra la transacción en db_payments."
+    ROLE = PROMPT_PAYMENT
 
     def __init__(self, mcp_servers):
         """

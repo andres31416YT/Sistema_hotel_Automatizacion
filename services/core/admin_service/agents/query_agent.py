@@ -3,13 +3,16 @@ AI Agent QueryAgent - Consults the database
 Uses McpDatabase to read and write data.
 """
 
+from core.prompts.admin_service.agents import PROMPT_QUERY  # noqa
+
+
 class QueryAgent:
-    ROLE = "Consulta datos operativos desde la base de datos hotelera: "
-    ROLE += "disponibilidad de habitaciones, perfiles de huéspedes, reservas, check-ins y check-outs."
+    ROLE = PROMPT_QUERY
 
     def __init__(self, mcp_servers):
         """
-        Initialize the QueryAgent.
+        Initialize the QueryAgent (Admin Service).
+        """
         
         Args:
             mcp_servers: Dictionary of available MCP servers

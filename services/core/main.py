@@ -343,21 +343,9 @@ async def _build_reply(text: str, name: str) -> str:
     Genera una respuesta usando Ollama (LLM local) en lugar de reglas fijas.
     Si Ollama no esta disponible, cae a reglas predefinidas.
     """
-    system_prompt = (
-        "Sos el asistente virtual de un hotel. "
-        "Sos amable, profesional y conciso. "
-        "Informacion basica del hotel:\n"
-        "- Check-in: 3:00 PM | Check-out: 11:00 AM\n"
-        "- Desayuno: 7:00 AM - 10:00 AM\n"
-        "- WiFi: gratuito en todas las areas\n"
-        "- Estacionamiento: incluido\n\n"
-        "Si el huesped pregunta por disponibilidad, pide fecha, tipo de habitacion "
-        "(simple, doble, suite) y numero de huespedes.\n"
-        "Si pregunta por pagos, pide el monto en soles y el numero de reserva o DNI, "
-        "y menciona que se generara un link de pago.\n"
-        "Si es consulta administrativa, deriva a un administrador.\n"
-        "Manten las respuestas cortas (maximo 3 parrafos)."
-    )
+    from core.prompts.customer_service.agents import PROMPT_LLM_HUESPED  # noqa
+
+    system_prompt = PROMPT_LLM_HUESPED
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
@@ -423,19 +411,9 @@ async def _build_reply_admin(text: str, name: str) -> str:
     Genera una respuesta para administradores usando Ollama.
     Prompt con contexto de admin: acceso completo, puede ver todo.
     """
-    system_prompt = (
-        "Sos el asistente ADMINISTRATIVO del sistema de gestion del hotel. "
-        "Respondes a administradores que tienen acceso completo.\n\n"
-        "Podes ayudar con:\n"
-        "- Ver reservas y estado de habitaciones\n"
-        "- Consultar pagos y transacciones\n"
-        "- Ver historial de huespedes\n"
-        "- Gestionar estado de habitaciones\n"
-        "- Responder consultas operativas\n\n"
-        "Sos directo, preciso y completo. No limitas la informacion.\n"
-        "Si el usuario pide algo que necesite acceso a base de datos, "
-        "indicale que puede consultarla directamente."
-    )
+    from core.prompts.admin_service.agents import PROMPT_LLM_ADMIN  # noqa
+
+    system_prompt = PROMPT_LLM_ADMIN
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:

@@ -3,17 +3,20 @@ AI Agent WriterAgent - Redacts messages
 Uses McpMessenger to send messages via WhatsApp.
 """
 
+from core.prompts.admin_service.agents import PROMPT_WRITER  # noqa
+
 import logging
 
 logger = logging.getLogger(__name__)
 
+
 class WriterAgent:
-    ROLE = "Recibe texto de otros agentes, lo formatea para WhatsApp "
-    ROLE += "(limite de 4096 caracteres, tono cordial) y lo envía al huésped."
+    ROLE = PROMPT_WRITER
 
     def __init__(self, mcp_servers):
         """
-        Initialize the WriterAgent.
+        Initialize the WriterAgent (Admin Service).
+        """
         
         Args:
             mcp_servers: Dictionary of available MCP servers

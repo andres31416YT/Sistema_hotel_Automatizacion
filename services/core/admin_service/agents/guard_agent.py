@@ -3,18 +3,20 @@ AI Agent GuardAgent - Responsible for security
 Uses McpSecurity to validate security, detect fraud, block numbers.
 """
 
+from core.prompts.admin_service.agents import PROMPT_GUARD  # noqa
+
 import logging
 
 logger = logging.getLogger(__name__)
 
+
 class GuardAgent:
-    ROLE = "Valida cada mensaje entrante: detecta spam, fraude y contenido malicioso. "
-    ROLE += "Bloquea remitentes peligrosos. Los administradores tienen inmunidad "
-    ROLE += "y nunca se bloquean."
+    ROLE = PROMPT_GUARD
 
     def __init__(self, mcp_servers):
         """
-        Initialize the GuardAgent.
+        Initialize the GuardAgent (Admin Service).
+        """
         
         Args:
             mcp_servers: Dictionary of available MCP servers

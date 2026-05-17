@@ -3,13 +3,16 @@ AI Agent Identifier - Identifies who sent the message (Admin Service)
 Uses McpWhatsapp and McpDatabase to get sender information.
 """
 
+from core.prompts.admin_service.agents import PROMPT_IDENTIFIER  # noqa
+
+
 class AdminIdentifierAgent:
-    ROLE = "Identifica quién envía el mensaje, obtiene contexto de contacto desde WhatsApp "
-    ROLE += "y perfil de usuario desde la base de datos hotelera."
+    ROLE = PROMPT_IDENTIFIER
 
     def __init__(self, mcp_servers):
         """
-        Initialize the Identifier agent.
+        Initialize the Admin Identifier agent.
+        """
         
         Args:
             mcp_servers: Dictionary of available MCP servers
