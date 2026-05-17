@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Ngrok tunnel for WhatsApp webhook (no env_file: reads NGROK_AUTHTOKEN inline)
   ngrok-whatsapp:
