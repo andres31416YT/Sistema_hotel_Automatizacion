@@ -1,8 +1,8 @@
 -- Schema for Payments Transactional PostgreSQL DB
--- Tables: transactions, payment_links, notifications
+-- Tables: transacciones, payment_links, mp_notifications
 
 -- Transactions table (records of processed payments)
-CREATE TABLE IF NOT EXISTS transactions (
+CREATE TABLE IF NOT EXISTS transacciones (
     id SERIAL PRIMARY KEY,
     payment_id VARCHAR(100) UNIQUE NOT NULL,  -- Mercado Pago payment ID
     amount DECIMAL(10,2) NOT NULL,
@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS mp_notifications (
 );
 
 -- Indexes
-CREATE INDEX IF NOT EXISTS idx_transactions_payment_id ON transactions(payment_id);
-CREATE INDEX IF NOT EXISTS idx_transactions_external_ref ON transactions(external_reference);
+CREATE INDEX IF NOT EXISTS idx_transacciones_payment_id ON transacciones(payment_id);
+CREATE INDEX IF NOT EXISTS idx_transacciones_external_ref ON transacciones(external_reference);
 CREATE INDEX IF NOT EXISTS idx_payment_links_external_ref ON payment_links(external_reference);
 CREATE INDEX IF NOT EXISTS idx_mp_notifications_received ON mp_notifications(received_at);

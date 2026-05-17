@@ -1,88 +1,113 @@
 import os
 import hmac
 import hashlib
-from fastapi import FastAPI, Request, Header, HTTPException
-import redis
 import json
 import logging
+from fastapi import FastAPI, Request, HTTPException
+import redis.asyncio as aioredis
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# Redis connection
-redis_client = redis.Redis(
-    host=os.getenv('REDIS_HOST', 'redis'),
-    port=int(os.getenv('REDIS_PORT', 6379)),
-    db=1,  # Using db=1 for payment related data as per documentation
-    decode_responses=True
+# ── Redis ────────────────────────────────────────────────────────────────────
+redis_client = aioredis.Redis(
+    host=os.getenv("REDIS_HOST", "redis"),
+    port=int(os.getenv("REDIS_PORT", 6379)),
+    password=os.getenv("REDIS_PASSWORD"),
+    decode_responses=True,
 )
 
-# Mercado Pago client secret for webhook validation
-MP_CLIENT_SECRET = os.getenv('MP_CLIENT_SECRET')
-if not MP_CLIENT_SECRET:
-    logger.error("MP_CLIENT_SECRET environment variable is not set")
+MP_WEBHOOK_SECRET = os.getenv("MP_WEBHOOK_SECRET")
+SYSTEM_PAYMENT_URL = os.getenv("SYSTEM_PAYMENT_URL", "http://localhost:8003")
+
+if not MP_WEBHOOK_SECRET:
+    logger.warning("MP_WEBHOOK_SECRET no configurado — validacion de firma desactivada")
+
+
+def _validate_mercadopago_signature(body: bytes, x_signature: str, x_request_id: str) -> bool:
+    """
+    MercadoPago envia la firma en el header x-signature con formato:
+    ts=<timestamp>,v1=<hash>
+    El mensaje a firmar es: id:<data.id>;request-id:<x-request-id>;ts:<ts>;
+    Referencia: https://www.mercadopago.com.pe/developers/es/docs/your-integrations/notifications/webhooks
+    """
+    try:
+        parts = dict(item.split("=", 1) for item in x_signature.split(","))
+        ts = parts.get("ts")
+        v1 = parts.get("v1")
+
+        if not ts or not v1:
+            return False
+
+        payload = json.loads(body)
+        data_id = payload.get("data", {}).get("id", "")
+
+        signed_template = f"id:{data_id};request-id:{x_request_id};ts:{ts};"
+
+        expected = hmac.new(
+            MP_WEBHOOK_SECRET.encode("utf-8"),
+            signed_template.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+        return hmac.compare_digest(expected, v1)
+
+    except Exception as e:
+        logger.error(f"Error validando firma MercadoPago: {e}")
+        return False
+
 
 @app.post("/webhook")
-async def mercadopago_webhook(
-    request: Request,
-    x_signature: str = Header(None, alias="x-signature")
-):
+async def mercadopago_webhook(request: Request):
     """
-    Handle incoming Mercado Pago webhook.
-    Validates the signature, extracts the notification, and enqueues it for processing.
+    Recibe notificaciones de MercadoPago.
+    Valida la firma HMAC segun el protocolo oficial de MercadoPago.
+    Encola la notificacion en Redis para que system_payment la procese.
+    Responde 200 inmediatamente para que MercadoPago no reintente.
     """
-    # Get the raw body
     body = await request.body()
-    
-    # Log the received body (be cautious with PII in production)
-    logger.info(f"Received Mercado Pago webhook body: {body}")
-    
-    # Verify the signature if we have a client secret
-    if MP_CLIENT_SECRET and x_signature:
-        # Calculate expected signature
-        expected_signature = hmac.new(
-            MP_CLIENT_SECRET.encode('utf-8'),
-            body,
-            hashlib.sha256
-        ).hexdigest()
-        
-        # Compare signatures
-        if not hmac.compare_digest(expected_signature, x_signature):
-            logger.warning("Invalid Mercado Pago signature received")
-            raise HTTPException(status_code=403, detail="Invalid signature")
-    elif not MP_CLIENT_SECRET:
-        logger.error("MP_CLIENT_SECRET not set")
-        raise HTTPException(status_code=500, detail="Server configuration error")
-    else:
-        logger.warning("No x-signature header provided")
-    
-    # Parse the JSON payload
+
+    x_signature = request.headers.get("x-signature", "")
+    x_request_id = request.headers.get("x-request-id", "")
+
+    # Validar firma si el secret esta configurado
+    if MP_WEBHOOK_SECRET:
+        if not x_signature:
+            logger.warning("Webhook recibido sin header x-signature")
+            raise HTTPException(status_code=403, detail="Firma requerida")
+
+        if not _validate_mercadopago_signature(body, x_signature, x_request_id):
+            logger.warning("Firma invalida en webhook de MercadoPago")
+            raise HTTPException(status_code=403, detail="Firma invalida")
+
     try:
         payload = json.loads(body)
     except json.JSONDecodeError as e:
-        logger.error(f"Invalid JSON received: {e}")
-        raise HTTPException(status_code=400, detail="Invalid JSON")
-    
-    # Log the payload (be cautious with PII)
-    logger.info(f"Parsed Mercado Pago payload: {json.dumps(payload, indent=2)[:200]}...")
-    
-    # Extract important info for logging
-    if 'data' in payload and 'id' in payload['data']:
-        payment_id = payload['data']['id']
-        logger.info(f"Processing payment notification for payment ID: {payment_id}")
-    
-    # Enqueue the raw payload to Redis for further processing
-    redis_client.lpush('payment_notifications', body.decode('utf-8'))
-    logger.info("Payment notification enqueued to Redis list 'payment_notifications'")
-    
-    # Return 200 OK to Mercado Pago to acknowledge receipt
+        logger.error(f"JSON invalido recibido: {e}")
+        raise HTTPException(status_code=400, detail="JSON invalido")
+
+    topic = payload.get("type", "unknown")
+    data_id = payload.get("data", {}).get("id", "sin-id")
+    logger.info(f"Notificacion MercadoPago recibida — tipo: {topic} | id: {data_id}")
+
+    # Encolar en Redis para procesamiento asincrono por system_payment
+    await redis_client.lpush(
+        "mp_payment_notifications",
+        json.dumps({"payload": payload, "x_request_id": x_request_id}),
+    )
+    logger.info(f"Notificacion encolada en Redis — mp_payment_notifications")
+
+    # MercadoPago requiere 200 inmediato para no reintentar
     return {"status": "ok"}
 
-# Health check endpoint
+
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
-    return {"status": "healthy"}
+    try:
+        await redis_client.ping()
+        redis_ok = True
+    except Exception:
+        redis_ok = False
+    return {"status": "healthy", "redis": redis_ok}
