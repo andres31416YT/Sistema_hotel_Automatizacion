@@ -23,8 +23,10 @@ app = FastAPI(title="System Core — Hotel Automatizacion")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CORE_PORT     = int(os.getenv("SYSTEM_CORE_PORT", 8080))
-SYSTEM_PAYMENT_URL = os.getenv("SYSTEM_PAYMENT_URL", "http://payment-system:8003")
+SYSTEM_PAYMENT_URL        = os.getenv("SYSTEM_PAYMENT_URL",        "http://payment-system:8003")
 SYSTEM_WHATSAPP_SENDER_URL = os.getenv("SYSTEM_WHATSAPP_SENDER_URL", "http://whatsapp-sender:8001")
+OLLAMA_API_URL            = os.getenv("OLLAMA_API_URL",            "http://ollama:11434")
+OLLAMA_MODEL              = os.getenv("OLLAMA_MODEL",              "qwen2.5:3b-instruct")
 
 DB_HOTEL = {
     "host":     os.getenv("DB_HOTEL_HOST"),
@@ -110,6 +112,14 @@ async def health_check():
             checks["system_payment"] = "ok" if resp.status_code == 200 else "degraded"
     except Exception:
         checks["system_payment"] = "error"
+
+    # Ollama AI
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{OLLAMA_API_URL}/api/tags")
+            checks["ollama"] = "ok" if resp.status_code == 200 else "degraded"
+    except Exception:
+        checks["ollama"] = "error"
 
     overall = "healthy" if all(v == "ok" for v in checks.values()) else "degraded"
     return {"status": overall, **checks}
@@ -348,7 +358,47 @@ async def _send_wa_message(to: str, text: str) -> None:
 
 
 async def _build_reply(text: str, name: str) -> str:
-    """Genera una respuesta simple por intents (sin NLP por ahora)."""
+    """
+    Genera una respuesta usando Ollama (LLM local) en lugar de reglas fijas.
+    Si Ollama no esta disponible, cae a reglas predefinidas.
+    """
+    system_prompt = (
+        "Sos el asistente virtual de un hotel. "
+        "Sos amable, profesional y conciso. "
+        "Informacion basica del hotel:\n"
+        "- Check-in: 3:00 PM | Check-out: 11:00 AM\n"
+        "- Desayuno: 7:00 AM - 10:00 AM\n"
+        "- WiFi: gratuito en todas las areas\n"
+        "- Estacionamiento: incluido\n\n"
+        "Si el huesped pregunta por disponibilidad, pide fecha, tipo de habitacion "
+        "(simple, doble, suite) y numero de huespedes.\n"
+        "Si pregunta por pagos, pide el monto en soles y el numero de reserva o DNI, "
+        "y menciona que se generara un link de pago.\n"
+        "Si es consulta administrativa, deriva a un administrador.\n"
+        "Manten las respuestas cortas (maximo 3 parrafos)."
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{OLLAMA_API_URL}/api/generate",
+                json={
+                    "model": OLLAMA_MODEL,
+                    "prompt": f"{system_prompt}\n\nHuesped: {text}\nAsistente:",
+                    "stream": False,
+                },
+            )
+        if resp.status_code == 200:
+            data = resp.json()
+            reply = (data.get("response") or "").strip()
+            if reply:
+                return reply
+        else:
+            logger.warning(f"[LLM] Ollama status={resp.status_code}")
+    except Exception as e:
+        logger.warning(f"[LLM] Ollama fallo ({e}), usando fallback")
+
+    # ── Fallback a reglas predefinidas (cuando Ollama no responde) ───────────────
     t = text.lower().strip()
     if any(w in t for w in ["hola", "buenas", "buenos dias", "buenas tardes"]):
         return (
@@ -380,6 +430,7 @@ async def _build_reply(text: str, name: str) -> str:
         )
     if "admin" in t:
         return "Un administrador te contactara en breve."
+
     return (
         f"Gracias por tu mensaje, {name}! "
         "Escribe 'disponibilidad', 'pago' o 'info' para comenzar."
@@ -407,7 +458,7 @@ async def _worker_wa() -> None:
 
             text = (msg.get("text") or "").strip()
 
-            # ── Filtro: mensajes vacíos no se procesan ───────────────────────
+            # ── Filtro: mensajes vacíos no se procesan ──────────────────────────────
             if not text:
                 processed += 1
                 continue
@@ -416,11 +467,6 @@ async def _worker_wa() -> None:
                 f"[WA WORKER] #{processed} De {msg['phone']} ({msg['name']}): "
                 f"{text[:80]!r}"
             )
-
-            # ── Filtro: mensajes vacíos se ignoran ──────────────────────────────
-            if not text:
-                processed += 1
-                continue
 
             # ── Regla 1: administradores tienen inmunidad ──────────────────────
             if is_admin(msg["phone"]):
@@ -464,3 +510,15 @@ async def _worker_wa() -> None:
 @app.get("/")
 async def root():
     return {"service": "core", "status": "running", "port": CORE_PORT}
+
+
+class LLMTestRequest(BaseModel):
+    message: str
+    name: str = "Usuario"
+
+
+@app.post("/", response_model=dict)
+async def test_llm(body: LLMTestRequest):
+    """Prueba el LLM: envia un mensaje y devuelve la respuesta generada."""
+    reply = await _build_reply(body.message, body.name)
+    return {"reply": reply}
