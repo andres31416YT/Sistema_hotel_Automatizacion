@@ -1,0 +1,3 @@
+# Core service requirements
+# This service primarily uses local Ollama service and internal communication
+# No external API clients needed in this simplified version

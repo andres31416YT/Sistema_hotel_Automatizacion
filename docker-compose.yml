@@ -1,0 +1,104 @@
+version: '3.8'
+
+services:
+  # Ngrok tunnel for WhatsApp webhook
+  ngrok-whatsapp:
+    image: ngrok/ngrok:3
+    command: http -host-header=rewrite whatsapp-webhook:8000
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    ports:
+      - "4040:4040"  # Ngrok web interface
+    # Note: The actual tunnel URL is provided by ngrok and must be configured in WhatsApp Business API
+
+  # Ngrok tunnel for Mercado Pago webhook
+  ngrok-mercadopago:
+    image: ngrok/ngrok:3
+    command: http -host-header=rewrite payment-webhook:8000
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    ports:
+      - "4041:4040"  # Ngrok web interface
+    # Note: The actual tunnel URL is provided by ngrok and must be configured in Mercado Pago
+
+  # WhatsApp webhook receiver: receives messages from WhatsApp and enqueues to Redis
+  whatsapp-webhook:
+    build:
+      context: ./services/whatsapp/webhook_whatsapp
+      dockerfile: Dockerfile
+    env_file:
+      - ./services/whatsapp/webhook_whatsapp/.env
+    depends_on:
+      - redis
+    # Note: In production, replace ngrok-whatsapp with a proper reverse proxy (e.g., Traefik) and remove the ngrok service
+
+  # WhatsApp message sender: sends messages to WhatsApp via the Business API
+  whatsapp-sender:
+    build:
+      context: ./services/whatsapp/system_whatsapp_sender
+      dockerfile: Dockerfile
+    env_file:
+      - ./services/whatsapp/system_whatsapp_sender/.env
+    depends_on:
+      - redis
+      - core  # To get the configuration and possibly trigger sending via core? Actually, the sender will read from redis independently.
+    # Note: In production, the sender would be triggered by the core service via redis queues (e.g., an outbound queue)
+
+  # Payment webhook receiver: receives notifications from Mercado Pago and enqueues to Redis
+  payment-webhook:
+    build:
+      context: ./services/payment/webhook_payment
+      dockerfile: Dockerfile
+    env_file:
+      - ./services/payment/webhook_payment/.env
+    depends_on:
+      - redis
+    # Note: In production, replace ngrok-mercadopago with a proper reverse proxy (e.g., Traefik) and remove the ngrok service
+
+  # Payment system: processes payment notifications, verifies, records, and may trigger messages
+  payment-system:
+    build:
+      context: ./services/payment/system_payment
+      dockerfile: Dockerfile
+    env_file:
+      - ./services/payment/system_payment/.env
+    depends_on:
+      - redis
+      - core  # To get configuration and possibly to trigger messages via core
+
+  # System Core: orchestrates AI agents and MCP servers
+  core:
+    build:
+      context: ./services/core
+      dockerfile: Dockerfile
+    env_file:
+      - ./services/core/.env
+    depends_on:
+      - redis
+      - db
+      - ai
+
+  # AI container: runs Ollama with the Qwen2.5-3B-Instruct model
+  ai:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+    # Note: The model is pulled on first run or via a separate command
+
+  # Database container: contains multiple databases
+  db:
+    build:
+      context: ./services/db
+      dockerfile: Dockerfile
+    env_file:
+      - ./services/db/.env
+    ports:
+      - "5432:5432"  # Hotel DB
+      - "5433:5433"  # Payments DB
+      - "5434:5434"  # RDB/PGVector DB
+      - "6379:6379"  # Redis
+
+volumes:
+  ollama:
