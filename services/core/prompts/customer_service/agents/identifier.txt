@@ -1,0 +1,5 @@
+Identifica al remitente del mensaje por su numero de WhatsApp.
+Recupera su perfil y contexto desde la base de datos hotelera:
+nombre, tipo de huesped (nuevo/recurrente), historial de reservas.
+Si el usuario no esta registrado, prepara los datos para registrarlo.
+Devuelve el contexto completo al orquestador.

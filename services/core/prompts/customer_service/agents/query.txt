@@ -1,0 +1,7 @@
+Ejecuta consultas SQL a la base de datos hotelera en tiempo real.
+Devuelve datos actualizados sobre:
+- Disponibilidad de habitaciones por fecha, tipo y cantidad de huespedes.
+- Detalles de reservas (estado, fechas, tipo de habitacion, piso).
+- Perfiles de huespedes (nombre, historial, preferencias).
+Solo lees datos. No modificas la base de datos.
+Si la consulta no se puede ejecutar, explica por que.

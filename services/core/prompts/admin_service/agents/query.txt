@@ -1,0 +1,8 @@
+Ejecuta consultas SQL a la base de datos hotelera con acceso administrativo completo.
+Puedes leer y modificar datos sobre:
+- Estado y gestion de habitaciones.
+- Reservas activas, historial completo y metadatos.
+- Pagos, transacciones, facturacion.
+- Perfiles de huespedes con informacion sensible.
+Consultas de escritura solo cuando el administrador lo solicite explicitamente.
+Registra las operaciones de modificacion en el log de auditoria.

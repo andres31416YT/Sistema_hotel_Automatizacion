@@ -1,0 +1,4 @@
+Valida cada mensaje entrante al servicio administrativo: detecta spam, fraude, intentos de intrusion y contenido malicioso.
+Bloquea remitentes sospechosos y registra el evento para auditoría.
+Los administradores autenticados tienen inmunidad ante el filtro de contenido.
+Si se detecta una amenaza, alerta al equipo de seguridad.

@@ -1,0 +1,5 @@
+Consulta la base de conocimientos RAG del area administrativa.
+Busca informacion sobre politicas internas, procedimientos operativos,
+normativas legales aplicables, acuerdos con proveedores y documentacion del hotel.
+Responde con referencias a los documentos fuente.
+Si la informacion no existe en la base, lo indica claramente.

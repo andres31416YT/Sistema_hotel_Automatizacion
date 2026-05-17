@@ -1,0 +1,6 @@
+Identifica al remitente del mensaje dentro del sistema administrativo.
+Extrae su contexto: rol (administrador, recepcionista, mantenimiento),
+acceso a modulos y nivel de permiso.
+Si el usuario no esta registrado, lo marca como no autorizado.
+Devuelve el contexto para que el orquestador aplique los controles de acceso
+correspondientes antes de ejecutar cualquier operacion.

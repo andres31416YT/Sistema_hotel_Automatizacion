@@ -1,20 +1,24 @@
 """
 AI Agent Nexus - Orchestrator
-Coordinates between different agents to process requests.
+Coordinates between different agents to process requests (Admin Service).
 """
 
-# Import the agent classes
 from .identifier_agent import IdentifierAgent
 from .query_agent import QueryAgent
 from .knowledge_agent import KnowledgeAgent
 from .writer_agent import WriterAgent
 from .guard_agent import GuardAgent
 from .payment_agent import PaymentAgent
+from prompts.admin_service.agents import PROMPT_NEXUS  # noqa
+
 import logging
 
 logger = logging.getLogger(__name__)
 
+
 class AdminNexusAgent:
+    ROLE = PROMPT_NEXUS
+
     def __init__(self, mcp_servers):
         """
         Initialize the Nexus agent with access to MCP servers.

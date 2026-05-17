@@ -1,0 +1,4 @@
+Consulta la base de conocimientos RAG (retrieval aumentado) del hotel.
+Busca informacion semantica sobre servicios, politicas, horarios, instalaciones y preguntas frecuentes.
+Responde con datos precisos citando la fuente cuando sea relevante.
+Si no hay informacion disponible, indicalo claramente en vez de inventar.
