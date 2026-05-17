@@ -437,6 +437,46 @@ async def _build_reply(text: str, name: str) -> str:
     )
 
 
+async def _build_reply_admin(text: str, name: str) -> str:
+    """
+    Genera una respuesta para administradores usando Ollama.
+    Prompt con contexto de admin: acceso completo, puede ver todo.
+    """
+    system_prompt = (
+        "Sos el asistente ADMINISTRATIVO del sistema de gestion del hotel. "
+        "Respondes a administradores que tienen acceso completo.\n\n"
+        "Podes ayudar con:\n"
+        "- Ver reservas y estado de habitaciones\n"
+        "- Consultar pagos y transacciones\n"
+        "- Ver historial de huespedes\n"
+        "- Gestionar estado de habitaciones\n"
+        "- Responder consultas operativas\n\n"
+        "Sos directo, preciso y completo. No limitas la informacion.\n"
+        "Si el usuario pide algo que necesite acceso a base de datos, "
+        "indicale que puede consultarla directamente."
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{OLLAMA_API_URL}/api/generate",
+                json={
+                    "model": OLLAMA_MODEL,
+                    "prompt": f"{system_prompt}\n\nAdmin ({name}): {text}\nAsistente:",
+                    "stream": False,
+                },
+            )
+        if resp.status_code == 200:
+            data = resp.json()
+            reply = (data.get("response") or "").strip()
+            if reply:
+                return reply
+    except Exception as e:
+        logger.warning(f"[LLM-ADMIN] Ollama fallo ({e})")
+
+    return f"Recibi tu consulta, {name}. Estoy procesando la solicitud administrativa."
+
+
 async def _worker_wa() -> None:
     """Worker principal que consume la cola 'whatsapp_in' via BRPOP."""
     logger.info("[WA WORKER] Iniciado — escuchando cola whatsapp_in")
@@ -468,24 +508,19 @@ async def _worker_wa() -> None:
                 f"{text[:80]!r}"
             )
 
-            # ── Regla 1: administradores tienen inmunidad ──────────────────────
-            if is_admin(msg["phone"]):
-                await _send_wa_message(
-                    msg["phone"],
-                    f"Hola {msg['name']}! Sos administrador. "
-                    "¿En que puedo ayudarte?",
-                )
-                processed += 1
-                continue
+            # ── Regla 1: seguridad pasa siempre (admins no se bloquean) ───────────
+            # Nota: no enviamos respuesta fija a admins — les damos contexto
+            # diferenciado en el prompt del LLM para que genere respuesta adecuada.
+            is_adm = is_admin(msg["phone"])
 
-            # ── Regla 2: validación de seguridad ───────────────────────────────
+            # ── Regla 2: validación de seguridad (admins inmunes) ─────────────────
             from customer_service.mcp_servers.mcp_security import McpSecurity
             sec = McpSecurity()
-            if not sec.validate_sender(msg["phone"]):
+            if not is_adm and not sec.validate_sender(msg["phone"]):
                 logger.warning(f"[WA WORKER] Remitente no autorizado {msg['phone']}")
                 processed += 1
                 continue
-            if not sec.validate_message_content(text, msg["phone"]):
+            if not is_adm and not sec.validate_message_content(text, msg["phone"]):
                 logger.warning(f"[WA WORKER] Contenido bloqueado de {msg['phone']}")
                 await _send_wa_message(
                     msg["phone"],
@@ -495,8 +530,11 @@ async def _worker_wa() -> None:
                 processed += 1
                 continue
 
-            # ── Regla 3: construir y enviar respuesta ──────────────────────────
-            reply = await _build_reply(text, msg["name"])
+            # ── Regla 3: responder con LLM (prompt adaptado a admin/huesped) ───────
+            if is_adm:
+                reply = await _build_reply_admin(text, msg["name"])
+            else:
+                reply = await _build_reply(text, msg["name"])
             await _send_wa_message(msg["phone"], reply)
             processed += 1
     except Exception as e:
