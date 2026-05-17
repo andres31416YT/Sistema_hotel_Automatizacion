@@ -2,6 +2,7 @@ import os
 import hmac
 import hashlib
 from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi.responses import Response
 import redis
 import json
 import logging
@@ -26,6 +27,32 @@ WHATSAPP_APP_SECRET = os.getenv('WHATSAPP_APP_SECRET')
 if not WHATSAPP_APP_SECRET:
     logger.error("WHATSAPP_APP_SECRET environment variable is not set")
     # In a real app, we might want to fail fast, but for now we'll let it fail when used
+
+WA_VERIFY_TOKEN = os.getenv('WA_VERIFY_TOKEN', '')
+if not WA_VERIFY_TOKEN:
+    logger.warning("WA_VERIFY_TOKEN no configurado — la verificacion de Meta fallara")
+
+
+@app.get("/webhook")
+async def whatsapp_webhook_verify(request: Request):
+    """
+    Meta llama a GET /webhook con hub.mode, hub.verify_token, hub.challenge
+    para verificar que el endpoint existe y el token coincide.
+    Devuelve hub.challenge en texto plano con 200 OK.
+    """
+    hub_mode   = request.query_params.get("hub.mode", "")
+    hub_token  = request.query_params.get("hub.verify_token", "")
+    hub_challenge = request.query_params.get("hub.challenge", "")
+
+    logger.info(f"[WA WEBHOOK] Verificacion recibida — mode={hub_mode} token={hub_token}")
+
+    if hub_mode == "subscribe" and hub_token == WA_VERIFY_TOKEN:
+        logger.info(f"[WA WEBHOOK] Verificacion exitosa — challenge: {hub_challenge}")
+        return Response(content=hub_challenge, status_code=200, media_type="text/plain")
+
+    logger.warning(f"[WA WEBHOOK] Verificacion fallida — token no coincide o modo invalido")
+    raise HTTPException(status_code=403, detail="Verification failed")
+
 
 @app.post("/webhook")
 async def whatsapp_webhook(
