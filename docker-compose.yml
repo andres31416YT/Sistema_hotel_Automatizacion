@@ -92,40 +92,40 @@ services:
   # Hotel Transactional PostgreSQL DB
   db_hotel:
     build:
-      context: ./services/db_hotel
+      context: ./services/db/db_hotel
       dockerfile: Dockerfile
     env_file:
-      - ./services/db_hotel/.env
+      - ./services/db/db_hotel/.env
     ports:
       - "5432:5432"
 
   # Payments Transactional PostgreSQL DB
   db_payments:
     build:
-      context: ./services/db_payments
+      context: ./services/db/db_payments
       dockerfile: Dockerfile
     env_file:
-      - ./services/db_payments/.env
+      - ./services/db/db_payments/.env
     ports:
       - "5433:5433"
 
   # RAG PostgreSQL DB with PGVector extension
   db_rag:
     build:
-      context: ./services/db_rag
+      context: ./services/db/db_rag
       dockerfile: Dockerfile
     env_file:
-      - ./services/db_rag/.env
+      - ./services/db/db_rag/.env
     ports:
       - "5434:5434"
 
   # Redis cache for short-term memory
   redis:
     build:
-      context: ./services/redis
+      context: ./services/db/redis
       dockerfile: Dockerfile
     env_file:
-      - ./services/redis/.env
+      - ./services/db/redis/.env
     ports:
       - "6379:6379"
 
