@@ -1,0 +1,543 @@
+**Sistema de Reservas Hotelero**
+
+Documentacion Tecnica de Arquitectura
+
+*Andres Pagan Roncall*
+
+Version 6.0 \| On-Premise (WSL2 Ubuntu) \| Python \| Multi-agente
+
+**1. Descripcion General**
+==========================
+
+Sistema de automatizacion inteligente para hoteles especializado en
+reservas de habitaciones. Los huespedes interactuan via WhatsApp con un
+Recepcionista Bot impulsado por agentes de IA. Los pagos se procesan via
+Mercado Pago con su propio container y tunel Ngrok dedicado.
+
+  **Caracteristica**   **Detalle**
+  -------------------- --------------------------------------------------
+  Lenguaje             Python
+  Entorno              WSL2 Ubuntu / Docker Compose
+  Modelo AI            AI Model Qwen2.5-3B-Instruct (via Ollama)
+  Arquitectura         Microservicios desacoplados / Multi-agente / MCP
+  Mensajeria           WhatsApp
+  Pagos                Mercado Pago --- Pasarela de pagos
+  Tunel WhatsApp       Ngrok / Tunel-WH-Whatsapp
+  Tunel Pagos          Ngrok / Tunel-WH-MercadoPago
+
+**2. Arquitectura General --- Docker Containers**
+=================================================
+
+El sistema esta compuesto por containers independientes comunicados por
+una red interna. Cada container tiene su propio archivo .env para
+desacoplar credenciales.
+
+  **Nombre en diagrama**                                                                                                               **Container**               **Responsabilidad**
+  ------------------------------------------------------------------------------------------------------------------------------------ --------------------------- -------------------------------------------------------------------------------
+  Ngrok / Tunel-WH-Whatsapp                                                                                                            Docker-container Ngrok      Expone el Webhook Whatsapp al internet publico
+  Ngrok / Tunel-WH-MercadoPago                                                                                                         Docker-container Ngrok      Expone el Webhook Payment al internet publico
+  Webhook Whatsapp + System Whatsapp-sender                                                                                            Docker-container Whatsapp   Recibe y envia mensajes WhatsApp
+  Webhook Payment + System Payment                                                                                                     Docker-container Payment    Recibe notificaciones de Mercado Pago y procesa pagos
+  System Core                                                                                                                          Docker-container Core       Orquesta todos los AI Agents y MCP Servers (Customer service + Admin service)
+  Ollama + AI Model Qwen2.5-3B-Instruct                                                                                                Docker-container AI         Corre el modelo de lenguaje local
+  DB Transaccional PostgreSQL Hotel + DB Transaccional PostgreSQL Payments + DB Cache Redis ShortMemory + DB RAG PostgreSQL PGVector   Docker-container DB         Todas las bases de datos del sistema
+
+**3. Flujos del Sistema**
+=========================
+
+**3.1 Flujo Principal --- Mensaje Entrante del Huesped**
+--------------------------------------------------------
+
+-   1\. Recibe mensaje: El User envia un mensaje al Recepcionista Bot
+    > por WhatsApp
+
+-   2\. Reenvia mensaje: Ngrok Tunel-WH-Whatsapp reenvía el mensaje al
+    > Webhook Whatsapp
+
+-   3\. Captura mensaje: El Webhook Whatsapp captura el mensaje y lo
+    > envia al System Core
+
+-   4\. Envia mensaje: El System Core activa el area Customer service y
+    > sus AI Agents
+
+-   5\. Envia mensaje: El System Whatsapp-sender envia la respuesta al
+    > Recepcionista Bot
+
+-   6\. El Recepcionista Bot entrega la respuesta al User en WhatsApp
+
+**3.2 Flujo de Pago --- Mercado Pago**
+--------------------------------------
+
+-   1\. AI Agent PaymentAgent genera un link de pago via MCP Server
+    > McpPayments
+
+-   2\. AI Agent WriterAgent envia el link al huesped via MCP Server
+    > McpMessenger
+
+-   3\. El huesped realiza el pago en la Pasarela de pagos de Mercado
+    > Pago
+
+-   4\. Mercado Pago notifica el pago al tunel publico Ngrok
+    > Tunel-WH-MercadoPago
+
+-   5\. El Webhook Payment recibe la notificacion
+
+-   6\. El System Payment valida y registra la transaccion en DB
+    > Transaccional PostgreSQL Payments
+
+-   7\. El System Core confirma la reserva y notifica al huesped
+
+**3.3 Flujo Admin --- Administrador del Hotel**
+-----------------------------------------------
+
+-   1\. El administrador del hotel envia un mensaje al bot por WhatsApp
+
+-   2\. El mensaje llega al System Core via el mismo flujo de Webhook
+    > Whatsapp
+
+-   3\. El System Core activa el area Admin service (area dedicada
+    > exclusivamente a administradores)
+
+-   4\. AI Agent Nexus (Admin) reconoce el perfil de administrador y
+    > habilita comandos de gestion
+
+-   5\. Los AI Agents procesan la solicitud con acceso a funciones
+    > administrativas
+
+-   6\. La respuesta se envia al administrador via System
+    > Whatsapp-sender
+
+**4. System Core --- Dos Areas Dedicadas**
+==========================================
+
+El System Core contiene dos areas completamente separadas e
+independientes. Cada area tiene sus propios AI Agents y MCP Servers. No
+comparten instancias entre si.
+
+  **Area**           **Dirigida a**                   **Descripcion**
+  ------------------ -------------------------------- -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Customer service   Huespedes (clientes del hotel)   Area dedicada exclusivamente a la atencion al cliente. Gestiona reservas, consultas, pagos y cualquier interaccion del huesped con el hotel.
+  Admin service      Administrador/es del hotel       Area dedicada exclusivamente a la gestion administrativa. Permite a los administradores gestionar habitaciones, ver reportes, modificar precios, revisar reservas y controlar el sistema.
+
+**5. AI Agents**
+================
+
+Cada area (Customer service y Admin service) tiene sus propios AI
+Agents. Todos consumen el AI Model Qwen2.5-3B-Instruct via Ollama
+(Docker-container AI).
+
+**5.1 AI Agents --- Customer service**
+--------------------------------------
+
+  **AI Agent**              **Descripcion en diagrama**            **MCP Servers que usa**
+  ------------------------- -------------------------------------- ------------------------------------------------
+  AI Agent Nexus            Orquestador                            MCP Server McpRouter
+  AI Agent Identifier       Identifica quien envio el mensaje      MCP Server McpWhatsapp, MCP Server McpDatabase
+  AI Agent QueryAgent       Consulta la DB                         MCP Server McpDatabase
+  AI Agent KnowledgeAgent   Consulta el RAG                        MCP Server McpRag
+  AI Agent WriterAgent      Redacta Mensaje                        MCP Server McpMessenger
+  AI Agent GuardAgent       Encargado de Seguridad                 MCP Server McpSecurity
+  AI Agent PaymentAgent     Encargado de revisar y atender pagos   MCP Server McpPayments
+
+**5.2 AI Agents --- Admin service**
+-----------------------------------
+
+  **AI Agent**              **Descripcion en diagrama**            **MCP Servers que usa**
+  ------------------------- -------------------------------------- ------------------------------------------------
+  AI Agent Nexus            Orquestador                            MCP Server McpRouter
+  AI Agent Identifier       Identifica quien envio el mensaje      MCP Server McpWhatsapp, MCP Server McpDatabase
+  AI Agent QueryAgent       Consulta la DB                         MCP Server McpDatabase
+  AI Agent KnowledgeAgent   Consulta el RAG                        MCP Server McpRag
+  AI Agent WriterAgent      Redacta Mensaje                        MCP Server McpMessenger
+  AI Agent GuardAgent       Encargado de Seguridad                 MCP Server McpSecurity
+  AI Agent PaymentAgent     Encargado de revisar y atender pagos   MCP Server McpPayments
+
+**6. MCP Servers**
+==================
+
+Los MCP Servers son las capacidades de accion de los AI Agents. Cada
+area (Customer service y Admin service) tiene su propia instancia de MCP
+Servers.
+
+  **MCP Server**            **Archivo**         **Capacidad**                                                                                  **AI Agents que lo usan**
+  ------------------------- ------------------- ---------------------------------------------------------------------------------------------- ------------------------------------------
+  MCP Server McpRouter      mcp\_router.py      Enruta mensajes entre agentes y orquesta el flujo                                              AI Agent Nexus
+  MCP Server McpWhatsapp    mcp\_whatsapp.py    Consulta informacion de contacto e historial de WhatsApp                                       AI Agent Identifier
+  MCP Server McpDatabase    mcp\_database.py    Lee y escribe en DB Transaccional PostgreSQL Hotel                                             AI Agent Identifier, AI Agent QueryAgent
+  MCP Server McpRag         mcp\_rag.py         Busqueda semantica en DB RAG PostgreSQL PGVector                                               AI Agent KnowledgeAgent
+  MCP Server McpMessenger   mcp\_messenger.py   Envia mensajes y links de pago via WhatsApp                                                    AI Agent WriterAgent
+  MCP Server McpSecurity    mcp\_security.py    Valida seguridad, detecta fraude, bloquea numeros                                              AI Agent GuardAgent
+  MCP Server McpPayments    mcp\_payments.py    Genera links Mercado Pago, verifica y registra pagos en DB Transaccional PostgreSQL Payments   AI Agent PaymentAgent
+
+**7. Estructura de Carpetas y Archivos**
+========================================
+
+Arquitectura no monolito. Cada servicio es independiente. Nombres en
+snake\_case respetando los nombres exactos del diagrama.
+
+**sistema\_reservas\_hotelero/**
+
+├── docker-compose.yml
+
+├── .gitignore
+
+│
+
+**└── services/**
+
+│
+
+**├── ngrok/**
+
+│ │
+
+**│ ├── tunel\_wh\_whatsapp/ \# Ngrok / Tunel-WH-Whatsapp**
+
+│ │ └── .env
+
+│ │
+
+**│ └── tunel\_wh\_mercado\_pago/ \# Ngrok / Tunel-WH-MercadoPago**
+
+│ └── .env
+
+│
+
+**├── whatsapp/ \# Docker-container Whatsapp**
+
+│ ├── Dockerfile
+
+│ ├── .env
+
+│ │
+
+**│ ├── webhook\_whatsapp/ \# Webhook Whatsapp**
+
+│ │ ├── main.py
+
+│ │ └── requirements.txt
+
+│ │
+
+**│ └── system\_whatsapp\_sender/ \# System Whatsapp-sender**
+
+│ ├── main.py
+
+│ └── requirements.txt
+
+│
+
+**├── payment/ \# Docker-container Payment**
+
+│ ├── Dockerfile
+
+│ ├── .env
+
+│ │
+
+**│ ├── webhook\_payment/ \# Webhook Payment**
+
+│ │ ├── main.py
+
+│ │ └── requirements.txt
+
+│ │
+
+**│ └── system\_payment/ \# System Payment**
+
+│ ├── main.py
+
+│ └── requirements.txt
+
+│
+
+**├── core/ \# Docker-container Core --- System Core**
+
+│ ├── Dockerfile
+
+│ ├── .env
+
+│ ├── main.py \# System Core
+
+│ ├── requirements.txt
+
+│ │
+
+**│ ├── customer\_service/ \# Customer service**
+
+**│ │ ├── agents/**
+
+│ │ │ ├── nexus.py \# AI Agent Nexus
+
+│ │ │ ├── identifier.py \# AI Agent Identifier
+
+│ │ │ ├── query\_agent.py \# AI Agent QueryAgent
+
+│ │ │ ├── knowledge\_agent.py \# AI Agent KnowledgeAgent
+
+│ │ │ ├── writer\_agent.py \# AI Agent WriterAgent
+
+│ │ │ ├── guard\_agent.py \# AI Agent GuardAgent
+
+│ │ │ └── payment\_agent.py \# AI Agent PaymentAgent
+
+**│ │ └── mcp\_servers/**
+
+│ │ ├── mcp\_router.py \# MCP Server McpRouter
+
+│ │ ├── mcp\_whatsapp.py \# MCP Server McpWhatsapp
+
+│ │ ├── mcp\_database.py \# MCP Server McpDatabase
+
+│ │ ├── mcp\_rag.py \# MCP Server McpRag
+
+│ │ ├── mcp\_messenger.py \# MCP Server McpMessenger
+
+│ │ ├── mcp\_security.py \# MCP Server McpSecurity
+
+│ │ └── mcp\_payments.py \# MCP Server McpPayments
+
+│ │
+
+**│ └── admin\_service/ \# Admin service**
+
+**│ ├── agents/**
+
+│ │ ├── nexus.py \# AI Agent Nexus
+
+│ │ ├── identifier.py \# AI Agent Identifier
+
+│ │ ├── query\_agent.py \# AI Agent QueryAgent
+
+│ │ ├── knowledge\_agent.py \# AI Agent KnowledgeAgent
+
+│ │ ├── writer\_agent.py \# AI Agent WriterAgent
+
+│ │ ├── guard\_agent.py \# AI Agent GuardAgent
+
+│ │ └── payment\_agent.py \# AI Agent PaymentAgent
+
+**│ └── mcp\_servers/**
+
+│ ├── mcp\_router.py \# MCP Server McpRouter
+
+│ ├── mcp\_whatsapp.py \# MCP Server McpWhatsapp
+
+│ ├── mcp\_database.py \# MCP Server McpDatabase
+
+│ ├── mcp\_rag.py \# MCP Server McpRag
+
+│ ├── mcp\_messenger.py \# MCP Server McpMessenger
+
+│ ├── mcp\_security.py \# MCP Server McpSecurity
+
+│ └── mcp\_payments.py \# MCP Server McpPayments
+
+│
+
+**├── ai/ \# Docker-container AI --- Ollama**
+
+│ └── .env
+
+│
+
+**└── db/ \# Docker-container DB**
+
+├── **db\_transaccional\_postgresql\_hotel/ \# DB Transaccional
+PostgreSQL Hotel**
+
+│ ├── .env
+
+**│ └── init/**
+
+│ ├── 00\_schema.sql \# DB - Tablas
+
+│ ├── 01\_roles.sql \# Roles
+
+│ └── 02\_indexes\_views.sql \# Indices - Vistas
+
+│
+
+├── **db\_transaccional\_postgresql\_payments/ \# DB Transaccional
+PostgreSQL Payments**
+
+│ ├── .env
+
+**│ └── init/**
+
+│ ├── 00\_schema.sql \# DB - Tablas
+
+│ ├── 01\_roles.sql \# Roles
+
+│ └── 02\_indexes\_views.sql \# Indices - Vistas
+
+│
+
+├── **db\_rag\_postgresql\_pgvector/ \# DB RAG PostgreSQL PGVector**
+
+│ ├── .env
+
+**│ └── init/**
+
+│ ├── 00\_schema.sql \# DB - Tablas
+
+│ ├── 01\_roles.sql \# Roles
+
+│ └── 02\_indexes\_views.sql \# Indices - Vistas
+
+│
+
+**└── db\_cache\_redis\_short\_memory/ \# DB Cache Short Memory Redis**
+
+├── .env
+
+└── redis.conf \# Config Redis
+
+**8. Bases de Datos (Docker-container DB)**
+===========================================
+
+  **Nombre en diagrama**                 **Motor**                **Puerto host**   **Dominio**
+  -------------------------------------- ------------------------ ----------------- -----------------------------------------------------------
+  DB Transaccional PostgreSQL Hotel      postgres:16-alpine       5432              Clientes, habitaciones, reservas, checkins
+  DB Transaccional PostgreSQL Payments   postgres:16-alpine       5433              Transacciones, links de pago, notificaciones Mercado Pago
+  DB RAG PostgreSQL PGVector             pgvector/pgvector:pg16   5434              Documentos del hotel, embeddings, busqueda semantica
+  DB Cache Redis ShortMemory             redis:7.2-alpine         6379              Memoria a corto plazo de conversaciones activas
+
+**8.1 DB Cache Redis ShortMemory --- Keys y TTL**
+-------------------------------------------------
+
+  **Key**                 **Contenido**                                             **TTL**    **AI Agent que escribe**
+  ----------------------- --------------------------------------------------------- ---------- --------------------------------------
+  chat:{numero\_wa}       Historial de conversacion activa                          30 min     AI Agent Nexus, AI Agent WriterAgent
+  session:{numero\_wa}    Datos de sesion activa del huesped                        1 hora     AI Agent Nexus
+  profile:{numero\_wa}    Perfil cacheado desde DB Transaccional PostgreSQL Hotel   24 horas   AI Agent Identifier
+  payment:{numero\_wa}    Estado del link de pago en curso                          15 min     AI Agent PaymentAgent
+  security:{numero\_wa}   Intentos fallidos y flags de seguridad                    1 hora     AI Agent GuardAgent
+
+**9. Configuracion de Puertos**
+===============================
+
+  **Nombre en diagrama**                    **Puerto host**   **Protocolo**   **Descripcion**
+  ----------------------------------------- ----------------- --------------- -----------------------------------------------
+  Ngrok / Tunel-WH-Whatsapp (panel)         4040              HTTP            Panel web de monitoreo del tunel WhatsApp
+  Ngrok / Tunel-WH-MercadoPago (panel)      4041              HTTP            Panel web de monitoreo del tunel Mercado Pago
+  Webhook Whatsapp                          8000              HTTP            Recibe mensajes entrantes de WhatsApp
+  System Whatsapp-sender                    8001              HTTP            Envia mensajes salientes a WhatsApp
+  Webhook Payment                           8002              HTTP            Recibe notificaciones de pago de Mercado Pago
+  System Payment                            8003              HTTP            Procesa pagos de Mercado Pago
+  System Core                               8080              HTTP            API principal del System Core multiagente
+  Ollama --- AI Model Qwen2.5-3B-Instruct   11434             HTTP            API del modelo de lenguaje local
+  DB Transaccional PostgreSQL Hotel         5432              TCP             Base de datos principal del hotel
+  DB Transaccional PostgreSQL Payments      5433              TCP             Base de datos de pagos
+  DB RAG PostgreSQL PGVector                5434              TCP             Base de datos vectorial para RAG
+  DB Cache Redis ShortMemory                6379              TCP             Cache de memoria a corto plazo
+
+**10. Archivos .env por Servicio**
+==================================
+
+Cada servicio tiene su propio archivo .env. Ningun .env debe subirse a
+Git. Agregar \*\*/.env al .gitignore.
+
+  **Servicio**                   **Ruta del archivo .env**                      **Variables (nombres, sin valores)**
+  ------------------------------ ---------------------------------------------- ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Ngrok / Tunel-WH-Whatsapp      services/ngrok/tunel\_wh\_whatsapp/.env        NGROK\_AUTHTOKEN, NGROK\_TARGET
+  Ngrok / Tunel-WH-MercadoPago   services/ngrok/tunel\_wh\_mercado\_pago/.env   NGROK\_AUTHTOKEN, NGROK\_TARGET
+  Docker-container Whatsapp      services/whatsapp/.env                         WA\_PHONE\_NUMBER\_ID, WA\_ACCESS\_TOKEN, WA\_VERIFY\_TOKEN, WA\_API\_VERSION, WA\_API\_URL, WEBHOOK\_WHATSAPP\_PORT, SYSTEM\_WHATSAPP\_SENDER\_PORT, CORE\_URL
+  Docker-container Payment       services/payment/.env                          MP\_ACCESS\_TOKEN, MP\_PUBLIC\_KEY, MP\_WEBHOOK\_SECRET, MP\_SANDBOX, WEBHOOK\_PAYMENT\_PORT, SYSTEM\_PAYMENT\_PORT, DB\_PAYMENTS\_HOST, DB\_PAYMENTS\_PORT, DB\_PAYMENTS\_NAME, DB\_PAYMENTS\_USER, DB\_PAYMENTS\_PASSWORD, CORE\_URL
+  Docker-container Core          services/core/.env                             OLLAMA\_API\_URL, OLLAMA\_MODEL, DB\_HOTEL\_HOST, DB\_HOTEL\_PORT, DB\_HOTEL\_NAME, DB\_HOTEL\_USER, DB\_HOTEL\_PASSWORD, DB\_RAG\_HOST, DB\_RAG\_PORT, DB\_RAG\_NAME, DB\_RAG\_USER, DB\_RAG\_PASSWORD, REDIS\_HOST, REDIS\_PORT, REDIS\_PASSWORD, REDIS\_TTL\_CHAT, REDIS\_TTL\_SESSION, REDIS\_TTL\_PROFILE, REDIS\_TTL\_PAYMENT, REDIS\_TTL\_SECURITY, SYSTEM\_WHATSAPP\_SENDER\_URL, MP\_ACCESS\_TOKEN, SYSTEM\_CORE\_PORT
+  Docker-container AI            services/ai/.env                               OLLAMA\_HOST, OLLAMA\_PORT
+  Docker-container DB            services/db/.env                               POSTGRES\_DB, POSTGRES\_USER, POSTGRES\_PASSWORD, POSTGRES\_PAYMENTS\_DB, POSTGRES\_PAYMENTS\_USER, POSTGRES\_PAYMENTS\_PASSWORD, POSTGRES\_RAG\_DB, POSTGRES\_RAG\_USER, POSTGRES\_RAG\_PASSWORD, REDIS\_PASSWORD
+
+**11. Imagenes Docker de Referencia**
+=====================================
+
+  **Herramienta**                **Imagen Docker**        **Version**   **Referencia**
+  ------------------------------ ------------------------ ------------- -----------------------------------------
+  Ollama                         ollama/ollama            latest        hub.docker.com/r/ollama/ollama
+  AI Model Qwen2.5-3B-Instruct   ollama pull qwen2.5:3b   qwen2.5:3b    huggingface.co/Qwen/Qwen2.5-3B-Instruct
+  PostgreSQL                     postgres:16-alpine       16-alpine     hub.docker.com/\_/postgres
+  PGVector                       pgvector/pgvector:pg16   pg16          hub.docker.com/r/pgvector/pgvector
+  Ngrok                          ngrok/ngrok:3            3             hub.docker.com/r/ngrok/ngrok
+  Redis                          redis:7.2-alpine         7.2-alpine    hub.docker.com/\_/redis
+
+**12. Comandos Utiles (WSL2 Ubuntu)**
+=====================================
+
+**12.1 Primera vez**
+--------------------
+
+-   Posicionarse en la raiz del proyecto: sistema\_reservas\_hotelero/
+
+-   Levantar todos los containers: docker compose up -d
+
+-   Descargar AI Model Qwen2.5-3B-Instruct (solo una vez,
+    > aproximadamente 2GB): docker exec -it docker\_container\_ai ollama
+    > pull qwen2.5:3b
+
+**12.2 Uso diario**
+-------------------
+
+-   Levantar: docker compose up -d
+
+-   Detener: docker compose down
+
+-   Ver logs del System Core: docker compose logs -f core
+
+-   Ver logs del System Payment: docker compose logs -f payment
+
+-   Ver URL del Tunel-WH-Whatsapp: curl
+    > http://localhost:4040/api/tunnels
+
+-   Ver URL del Tunel-WH-MercadoPago: curl
+    > http://localhost:4041/api/tunnels
+
+**12.3 Verificacion de salud**
+------------------------------
+
+-   Estado de todos los containers: docker compose ps
+
+-   Verificar Ollama: curl http://localhost:11434/api/tags
+
+-   Verificar Webhook Whatsapp: curl http://localhost:8000/health
+
+-   Verificar Webhook Payment: curl http://localhost:8002/health
+
+-   Verificar System Core: curl http://localhost:8080/health
+
+**13. Seguridad y Buenas Practicas**
+====================================
+
+-   Nunca subir ningun .env a Git. Agregar \*\*/.env al .gitignore
+
+-   Ngrok Tunel-WH-Whatsapp expone solo el puerto 8000 (Webhook
+    > Whatsapp)
+
+-   Ngrok Tunel-WH-MercadoPago expone solo el puerto 8002 (Webhook
+    > Payment)
+
+-   DB Cache Redis ShortMemory requiere password obligatorio
+
+-   Cada DB PostgreSQL usa su propio usuario independiente sin
+    > privilegios de superusuario
+
+-   AI Agent GuardAgent valida cada mensaje entrante antes de que llegue
+    > a AI Agent Nexus
+
+-   Mercado Pago en modo sandbox durante desarrollo (MP\_SANDBOX=true)
+
+-   La red interna de Docker solo expone al host los puertos
+    > explicitamente mapeados
+
+-   WA\_VERIFY\_TOKEN valida que los webhooks provienen de Meta
+
+-   MP\_WEBHOOK\_SECRET valida la firma HMAC de las notificaciones de
+    > Mercado Pago
+
+**14. Servicios Externos**
+==========================
+
+  **Servicio**                         **Proposito en el sistema**                                        **Registro**                    **Credenciales requeridas**
+  ------------------------------------ ------------------------------------------------------------------ ------------------------------- -------------------------------------------------------------
+  WhatsApp                             Mensajeria con huespedes y administradores via Recepcionista Bot   developers.facebook.com         WA\_PHONE\_NUMBER\_ID, WA\_ACCESS\_TOKEN, WA\_VERIFY\_TOKEN
+  Mercado Pago --- Pasarela de pagos   Procesamiento de pagos de reservas                                 mercadopago.com.pe/developers   MP\_ACCESS\_TOKEN, MP\_PUBLIC\_KEY, MP\_WEBHOOK\_SECRET
+  Ngrok                                Tunel-WH-Whatsapp y Tunel-WH-MercadoPago                           dashboard.ngrok.com             NGROK\_AUTHTOKEN (mismo token para ambos tuneles)
