@@ -6,6 +6,8 @@ Expone endpoints publicos y recibe notificaciones de pagos desde system_payment.
 import os
 import json
 import asyncio
+import sys
+import re
 import logging
 import httpx
 import redis
@@ -16,7 +18,13 @@ from typing import Any
 from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 
-logging.basicConfig(level=logging.INFO)
+sys.stdout.reconfigure(line_buffering=True)
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s %(levelname)s %(message)s",
+    force=True,
+)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="System Core — Hotel Automatizacion")
@@ -228,44 +236,6 @@ async def payment_confirmed(request: Request):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-# ── Worker WhatsApp — consume cola whatsapp_in ────────────────────────────────
-
-async def _parse_wa_message(raw: str) -> dict:
-    """Extrae telefono, nombre y texto de un webhook de WhatsApp."""
-    try:
-        payload = json.loads(raw)
-        entry = payload.get("entry", [{}])[0]
-        changes = entry.get("changes", [{}])[0]
-        value = changes.get("value", {})
-        contact = value.get("contacts", [{}])[0]
-        msg = value.get("messages", [{}])[0]
-        return {
-            "phone":    contact.get("wa_id", ""),
-            "name":     contact.get("profile", {}).get("name", "Usuario"),
-            "text":     msg.get("text", {}).get("body", ""),
-            "message_id": msg.get("id", ""),
-        }
-    except Exception as e:
-        logger.error(f"[WA WORKER] Error parseando mensaje: {e}")
-        return {}
-
-
-async def _send_wa_message(to: str, text: str) -> None:
-    """Reenvía un mensaje de texto al huesped via WhatsApp Sender."""
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(
-                f"{SYSTEM_WHATSAPP_SENDER_URL}/send-message",
-                json={"to": to, "type": "text", "text": {"body": text}},
-            )
-        if resp.status_code == 200:
-            logger.info(f"[WA WORKER] Mensaje enviado a {to}")
-        else:
-            logger.error(f"[WA WORKER] Error enviando a {to}: {resp.status_code} {resp.text[:200]}")
-    except Exception as e:
-        logger.error(f"[WA WORKER] Error enviando a {to}: {e}")
-
-
 async def _enviar_confirmacion_whatsapp(reserva_id: str, payment_id: str):
     """
     Llama al System WhatsApp Sender para enviar un mensaje de confirmacion
@@ -310,32 +280,43 @@ async def _enviar_confirmacion_whatsapp(reserva_id: str, payment_id: str):
 # Cada mensaje entrante por WhatsApp se encola en 'whatsapp_in'.
 # Este worker lo consume con BRPOP, valida seguridad y responde.
 
-import json
-import re
-
-
 def _normalize_phone(raw: str) -> str:
     """Elimina espacios y guiones del numero de telefono."""
     return re.sub(r"[^\d]", "", raw)
 
 
-def _parse_wa_message(raw: str) -> dict:
+def _parse_wa_message(raw) -> dict:
     """Extrae phone, name, text de un evento de webhook de WhatsApp."""
     try:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        raw = (raw or "").strip()
+        if not raw:
+            logger.warning("[WA WORKER] Mensaje vacio — ignorado")
+            return {}
         payload = json.loads(raw)
         entry   = payload.get("entry", [{}])[0]
         changes = entry.get("changes", [{}])[0]
         value   = changes.get("value", {})
+        logger.debug(f"[WA PARSER] value keys: {list(value.keys())}")
+        # Filtrar eventos de estado sin mensaje
+        if "statuses" in value and not value.get("messages"):
+            logger.debug("[WA PARSER] Es evento de estado, ignorado")
+            return {}
         contact = value.get("contacts", [{}])[0]
-        msg     = value.get("messages", [{}])[0]
-        return {
-            "phone":  _normalize_phone(contact.get("wa_id", "")),
-            "name":   contact.get("profile", {}).get("name", "Usuario"),
-            "text":   msg.get("text", {}).get("body", ""),
-            "msg_id": msg.get("id", ""),
-        }
+        msg_e   = value.get("messages", [{}])[0]
+        wa_id   = contact.get("wa_id", "")
+        from_f  = msg_e.get("from", "")
+        phone   = _normalize_phone(wa_id or from_f)
+        name    = (contact.get("profile", {}) or {}).get("name") or "Usuario"
+        text    = ((msg_e.get("text") or {}).get("body") or "").strip()
+        logger.debug(f"[WA PARSER] wa_id={wa_id!r} from={from_f!r} phone={phone!r} text={text!r}")
+        if not phone or not text:
+            logger.warning(f"[WA PARSER] Falta phone o text — phone={phone!r} text={text!r}")
+            return {}
+        return {"phone": phone, "name": name, "text": text, "msg_id": msg_e.get("id", "")}
     except Exception as e:
-        logger.error(f"[WA WORKER] Parse error: {e}")
+        logger.warning(f"[WA PARSER] Error: {e}")
         return {}
 
 
@@ -485,62 +466,74 @@ async def _worker_wa() -> None:
         password=REDIS_PASSWORD, decode_responses=True,
     )
     processed = 0
-    try:
-        while True:
+    while True:
+        try:
+            logger.debug("[WA WORKER] Esperando mensaje en cola whatsapp_in...")
             result = await r.brpop("whatsapp_in", timeout=5)
+            logger.debug(f"[WA WORKER] brpop resultado: {result}")
             if result is None:
                 continue
             _, raw = result
             msg = _parse_wa_message(raw)
+            logger.debug(f"[WA PARSER] resultado: phone={msg.get('phone')!r}  text={msg.get('text')!r}  keys={list(msg.keys())}")
             if not msg or not msg.get("phone"):
-                logger.warning("[WA WORKER] Mensaje sin telefono — ignorado")
+                logger.warning(f"[WA WORKER] Mensaje sin telefono (raw[:120]={raw[:120]!r}) — ignorado")
                 continue
 
             text = (msg.get("text") or "").strip()
 
             # ── Filtro: mensajes vacíos no se procesan ──────────────────────────────
             if not text:
-                processed += 1
                 continue
 
+            processed += 1
             logger.info(
-                f"[WA WORKER] #{processed} De {msg['phone']} ({msg['name']}): "
+                f"[WA WORKER] #{processed} De {msg['phone']} ({msg.get('name','?')}): "
                 f"{text[:80]!r}"
             )
 
             # ── Regla 1: seguridad pasa siempre (admins no se bloquean) ───────────
-            # Nota: no enviamos respuesta fija a admins — les damos contexto
-            # diferenciado en el prompt del LLM para que genere respuesta adecuada.
             is_adm = is_admin(msg["phone"])
 
-            # ── Regla 2: validación de seguridad (admins inmunes) ─────────────────
+            # ── Regla 2: validacion de seguridad (admins inmunes) ─────────────────
             from customer_service.mcp_servers.mcp_security import McpSecurity
             sec = McpSecurity()
             if not is_adm and not sec.validate_sender(msg["phone"]):
                 logger.warning(f"[WA WORKER] Remitente no autorizado {msg['phone']}")
-                processed += 1
                 continue
             if not is_adm and not sec.validate_message_content(text, msg["phone"]):
                 logger.warning(f"[WA WORKER] Contenido bloqueado de {msg['phone']}")
-                await _send_wa_message(
-                    msg["phone"],
-                    "Lo siento, no puedo procesar ese mensaje. "
-                    "Contacta al administrador si crees que es un error.",
-                )
-                processed += 1
+                try:
+                    await _send_wa_message(
+                        msg["phone"],
+                        "Lo siento, no puedo procesar ese mensaje. "
+                        "Contacta al administrador si crees que es un error.",
+                    )
+                except Exception:
+                    pass
                 continue
 
-            # ── Regla 3: responder con LLM (prompt adaptado a admin/huesped) ───────
-            if is_adm:
-                reply = await _build_reply_admin(text, msg["name"])
-            else:
-                reply = await _build_reply(text, msg["name"])
-            await _send_wa_message(msg["phone"], reply)
-            processed += 1
-    except Exception as e:
-        logger.error(f"[WA WORKER] Error critico: {e}")
-    finally:
-        await r.close()
+            # ── Regla 3: responder con LLM (adaptado admin / huesped) ────────────
+            try:
+                reply = (
+                    await _build_reply_admin(text, msg.get("name", "Admin"))
+                    if is_adm else
+                    await _build_reply(text, msg.get("name", "Usuario"))
+                )
+            except Exception as e:
+                logger.error(f"[WA WORKER] LLM fallo: {e}")
+                reply = "Gracias por tu mensaje. En este momento el asistente no esta disponible."
+
+            try:
+                await _send_wa_message(msg["phone"], reply)
+            except Exception as e:
+                logger.error(f"[WA WORKER] No se pudo enviar respuesta a {msg['phone']}: {e}")
+
+        except asyncio.CancelledError:
+            logger.info("[WA WORKER] Cancelado — saliendo limpiamente")
+            break
+        except Exception as e:
+            logger.error(f"[WA WORKER] Error procesando mensaje: {e}", exc_info=True)
 
 
 # ── Info ──────────────────────────────────────────────────────────────────────
