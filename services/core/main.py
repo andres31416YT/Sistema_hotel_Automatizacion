@@ -12,6 +12,7 @@ import redis
 import redis.asyncio as aioredis
 import asyncpg
 from datetime import datetime, timezone
+from typing import Any
 from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 
@@ -53,11 +54,17 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
 # ── Autenticacion ──────────────────────────────────────────────────────────────
-from core_auth_settings import is_admin  # noqa: E402
+from core_auth_settings import is_admin, get_admin_phones  # noqa: E402
 
 # ── Almacenamiento en memoria ───────────────────────────────────────────────────
 _reservas: dict = {}
 _reservas_lock = asyncio.Lock()
+
+
+@app.on_event("startup")
+async def startup():
+    get_admin_phones()  # precarga al iniciar
+    asyncio.create_task(_worker_wa())
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
@@ -211,6 +218,44 @@ async def payment_confirmed(request: Request):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+# ── Worker WhatsApp — consume cola whatsapp_in ────────────────────────────────
+
+async def _parse_wa_message(raw: str) -> dict:
+    """Extrae telefono, nombre y texto de un webhook de WhatsApp."""
+    try:
+        payload = json.loads(raw)
+        entry = payload.get("entry", [{}])[0]
+        changes = entry.get("changes", [{}])[0]
+        value = changes.get("value", {})
+        contact = value.get("contacts", [{}])[0]
+        msg = value.get("messages", [{}])[0]
+        return {
+            "phone":    contact.get("wa_id", ""),
+            "name":     contact.get("profile", {}).get("name", "Usuario"),
+            "text":     msg.get("text", {}).get("body", ""),
+            "message_id": msg.get("id", ""),
+        }
+    except Exception as e:
+        logger.error(f"[WA WORKER] Error parseando mensaje: {e}")
+        return {}
+
+
+async def _send_wa_message(to: str, text: str) -> None:
+    """Reenvía un mensaje de texto al huesped via WhatsApp Sender."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                f"{SYSTEM_WHATSAPP_SENDER_URL}/send-message",
+                json={"to": to, "type": "text", "text": {"body": text}},
+            )
+        if resp.status_code == 200:
+            logger.info(f"[WA WORKER] Mensaje enviado a {to}")
+        else:
+            logger.error(f"[WA WORKER] Error enviando a {to}: {resp.status_code} {resp.text[:200]}")
+    except Exception as e:
+        logger.error(f"[WA WORKER] Error enviando a {to}: {e}")
+
+
 async def _enviar_confirmacion_whatsapp(reserva_id: str, payment_id: str):
     """
     Llama al System WhatsApp Sender para enviar un mensaje de confirmacion
@@ -249,6 +294,169 @@ async def _enviar_confirmacion_whatsapp(reserva_id: str, payment_id: str):
         logger.error(f"[CORE] Error en enviar_confirmacion_whatsapp: {e}")
     finally:
         r.close()
+
+
+# ── Worker WhatsApp — consume cola whatsapp_in ────────────────────────────────
+# Cada mensaje entrante por WhatsApp se encola en 'whatsapp_in'.
+# Este worker lo consume con BRPOP, valida seguridad y responde.
+
+import json
+import re
+
+
+def _normalize_phone(raw: str) -> str:
+    """Elimina espacios y guiones del numero de telefono."""
+    return re.sub(r"[^\d]", "", raw)
+
+
+def _parse_wa_message(raw: str) -> dict:
+    """Extrae phone, name, text de un evento de webhook de WhatsApp."""
+    try:
+        payload = json.loads(raw)
+        entry   = payload.get("entry", [{}])[0]
+        changes = entry.get("changes", [{}])[0]
+        value   = changes.get("value", {})
+        contact = value.get("contacts", [{}])[0]
+        msg     = value.get("messages", [{}])[0]
+        return {
+            "phone":  _normalize_phone(contact.get("wa_id", "")),
+            "name":   contact.get("profile", {}).get("name", "Usuario"),
+            "text":   msg.get("text", {}).get("body", ""),
+            "msg_id": msg.get("id", ""),
+        }
+    except Exception as e:
+        logger.error(f"[WA WORKER] Parse error: {e}")
+        return {}
+
+
+async def _send_wa_message(to: str, text: str) -> None:
+    """Envía un mensaje de texto al huésped por WhatsApp Sender."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                f"{SYSTEM_WHATSAPP_SENDER_URL}/send-message",
+                json={"to": to, "type": "text", "text": {"body": text}},
+            )
+        if resp.status_code == 200:
+            logger.info(f"[WA WORKER] Enviado a {to}")
+        else:
+            logger.error(
+                f"[WA WORKER] Error enviando a {to}: {resp.status_code} {resp.text[:200]}"
+            )
+    except Exception as e:
+        logger.error(f"[WA WORKER] Exception enviando a {to}: {e}")
+
+
+async def _build_reply(text: str, name: str) -> str:
+    """Genera una respuesta simple por intents (sin NLP por ahora)."""
+    t = text.lower().strip()
+    if any(w in t for w in ["hola", "buenas", "buenos dias", "buenas tardes"]):
+        return (
+            f"Hola {name}! Bienvenido al hotel. "
+            "Escribe 'disponibilidad', 'pago' o 'info' para continuar."
+        )
+    if any(w in t for w in ["disponibilidad", "habitacion", "habitaciones", "disponible"]):
+        return (
+            "Para verificar disponibilidad necesito:\n"
+            "1. Fecha de check-in\n"
+            "2. Tipo de habitacion (simple, doble, suite)\n"
+            "3. Numero de huespedes\n\n"
+            "Ejemplo: '25 de mayo, doble, 2 personas'"
+        )
+    if any(w in t for w in ["pago", "pagar", "link", "transferencia"]):
+        return (
+            "Para generar tu link de pago necesito:\n"
+            "1. Monto en soles\n"
+            "2. Numero de reserva o DNI\n\n"
+            "Ejemplo: 'Pagar 150 soles, reserva 456'"
+        )
+    if any(w in t for w in ["info", "informacion", "detalles", "horario", "desayuno", "wifi"]):
+        return (
+            "Informacion del hotel:\n"
+            "Check-in: 3:00 PM | Check-out: 11:00 AM\n"
+            "Desayuno: 7:00 AM - 10:00 AM\n"
+            "WiFi: gratuito en todas las areas\n"
+            "Estacionamiento: incluido"
+        )
+    if "admin" in t:
+        return "Un administrador te contactara en breve."
+    return (
+        f"Gracias por tu mensaje, {name}! "
+        "Escribe 'disponibilidad', 'pago' o 'info' para comenzar."
+    )
+
+
+async def _worker_wa() -> None:
+    """Worker principal que consume la cola 'whatsapp_in' via BRPOP."""
+    logger.info("[WA WORKER] Iniciado — escuchando cola whatsapp_in")
+    r = aioredis.Redis(
+        host=REDIS_HOST, port=REDIS_PORT,
+        password=REDIS_PASSWORD, decode_responses=True,
+    )
+    processed = 0
+    try:
+        while True:
+            result = await r.brpop("whatsapp_in", timeout=5)
+            if result is None:
+                continue
+            _, raw = result
+            msg = _parse_wa_message(raw)
+            if not msg or not msg.get("phone"):
+                logger.warning("[WA WORKER] Mensaje sin telefono — ignorado")
+                continue
+
+            text = (msg.get("text") or "").strip()
+
+            # ── Filtro: mensajes vacíos no se procesan ───────────────────────
+            if not text:
+                processed += 1
+                continue
+
+            logger.info(
+                f"[WA WORKER] #{processed} De {msg['phone']} ({msg['name']}): "
+                f"{text[:80]!r}"
+            )
+
+            # ── Filtro: mensajes vacíos se ignoran ──────────────────────────────
+            if not text:
+                processed += 1
+                continue
+
+            # ── Regla 1: administradores tienen inmunidad ──────────────────────
+            if is_admin(msg["phone"]):
+                await _send_wa_message(
+                    msg["phone"],
+                    f"Hola {msg['name']}! Sos administrador. "
+                    "¿En que puedo ayudarte?",
+                )
+                processed += 1
+                continue
+
+            # ── Regla 2: validación de seguridad ───────────────────────────────
+            from customer_service.mcp_servers.mcp_security import McpSecurity
+            sec = McpSecurity()
+            if not sec.validate_sender(msg["phone"]):
+                logger.warning(f"[WA WORKER] Remitente no autorizado {msg['phone']}")
+                processed += 1
+                continue
+            if not sec.validate_message_content(text, msg["phone"]):
+                logger.warning(f"[WA WORKER] Contenido bloqueado de {msg['phone']}")
+                await _send_wa_message(
+                    msg["phone"],
+                    "Lo siento, no puedo procesar ese mensaje. "
+                    "Contacta al administrador si crees que es un error.",
+                )
+                processed += 1
+                continue
+
+            # ── Regla 3: construir y enviar respuesta ──────────────────────────
+            reply = await _build_reply(text, msg["name"])
+            await _send_wa_message(msg["phone"], reply)
+            processed += 1
+    except Exception as e:
+        logger.error(f"[WA WORKER] Error critico: {e}")
+    finally:
+        await r.close()
 
 
 # ── Info ──────────────────────────────────────────────────────────────────────
