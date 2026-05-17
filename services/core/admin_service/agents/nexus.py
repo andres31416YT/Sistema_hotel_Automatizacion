@@ -7,7 +7,7 @@ Coordinates between different agents to process requests.
 from .identifier_agent import IdentifierAgent
 from .query_agent import QueryAgent
 from .knowledge_agent import KnowledgeAgent
-from .writer_agent import WriterAgent
+from .writer_agent = WriterAgent
 from .guard_agent = GuardAgent
 from .payment_agent = PaymentAgent
 

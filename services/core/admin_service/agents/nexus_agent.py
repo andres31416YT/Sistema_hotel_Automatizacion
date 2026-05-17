@@ -3,28 +3,18 @@ AI Agent Nexus - Orchestrator
 Coordinates between different agents to process requests.
 """
 
-# Import agent classes from the same package
+# Import the agent classes
 from .identifier_agent import IdentifierAgent
 from .query_agent import QueryAgent
 from .knowledge_agent import KnowledgeAgent
 from .writer_agent import WriterAgent
-from .guard_agent = GuardAgent
-from .payment_agent = PaymentAgent
-
-# Import MCP server classes from the mcp_servers package
-from .mcp_servers.mcp_router = McpRouter
-from .mcp_servers.mcp_whatsapp = McpWhatsapp
-from .mcp_servers.mcp_database = McpDatabase
-from .mcp_servers.mcp_rag = McpRag
-from .mcp_servers.mcp_messenger = McpMessenger
-from .mcp_servers.mcp_security = McpSecurity
-from .mcp_servers.mcp_payments = McpPayments
-
+from .guard_agent import GuardAgent
+from .payment_agent import PaymentAgent
 import logging
 
 logger = logging.getLogger(__name__)
 
-class NexusAgent:
+class AdminNexusAgent:
     def __init__(self, mcp_servers):
         """
         Initialize the Nexus agent with access to MCP servers.
