@@ -1,3 +1,7 @@
 # Core service requirements
-# This service primarily uses local Ollama service and internal communication
-# No external API clients needed in this simplified version
+# This service uses asyncpg for PostgreSQL database connections, redis-py for Redis, and python-dotenv for environment variables.
+# It also uses asyncio (built-in) and logging (built-in).
+
+asyncpg==0.29.0
+redis==5.0.5
+python-dotenv==1.0.1

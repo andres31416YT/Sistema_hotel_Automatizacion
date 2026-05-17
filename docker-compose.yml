@@ -75,7 +75,9 @@ services:
       - ./services/core/.env
     depends_on:
       - redis
-      - db
+      - db_hotel
+      - db_payments
+      - db_rag
       - ai
 
   # AI container: runs Ollama with the Qwen2.5-3B-Instruct model
@@ -87,18 +89,45 @@ services:
       - "11434:11434"
     # Note: The model is pulled on first run or via a separate command
 
-  # Database container: contains multiple databases
-  db:
+  # Hotel Transactional PostgreSQL DB
+  db_hotel:
     build:
-      context: ./services/db
+      context: ./services/db_hotel
       dockerfile: Dockerfile
     env_file:
-      - ./services/db/.env
+      - ./services/db_hotel/.env
     ports:
-      - "5432:5432"  # Hotel DB
-      - "5433:5433"  # Payments DB
-      - "5434:5434"  # RDB/PGVector DB
-      - "6379:6379"  # Redis
+      - "5432:5432"
+
+  # Payments Transactional PostgreSQL DB
+  db_payments:
+    build:
+      context: ./services/db_payments
+      dockerfile: Dockerfile
+    env_file:
+      - ./services/db_payments/.env
+    ports:
+      - "5433:5433"
+
+  # RAG PostgreSQL DB with PGVector extension
+  db_rag:
+    build:
+      context: ./services/db_rag
+      dockerfile: Dockerfile
+    env_file:
+      - ./services/db_rag/.env
+    ports:
+      - "5434:5434"
+
+  # Redis cache for short-term memory
+  redis:
+    build:
+      context: ./services/redis
+      dockerfile: Dockerfile
+    env_file:
+      - ./services/redis/.env
+    ports:
+      - "6379:6379"
 
 volumes:
   ollama:
