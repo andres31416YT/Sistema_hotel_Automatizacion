@@ -1,16 +1,17 @@
 services:
-  # Ngrok tunnel for WhatsApp webhook (no env_file: reads NGROK_AUTHTOKEN inline)
+  # Ngrok tunnel for WhatsApp webhook (env_file apunta a su propio .env)
   ngrok-whatsapp:
     image: ngrok/ngrok:3
-    command: http -host-header=rewrite whatsapp-webhook:8000
+    command: http whatsapp-webhook:8000
     env_file:
       - ./services/ngrok/tunel_wh_whatsapp/.env
     ports:
       - "4040:4040"
 
+  # Ngrok tunnel for Mercado Pago webhook (env_file apunta a su propio .env)
   ngrok-mercadopago:
     image: ngrok/ngrok:3
-    command: http -host-header=rewrite payment-webhook:8002
+    command: http payment-webhook:8002
     env_file:
       - ./services/ngrok/tunel_wh_mercado_pago/.env
     ports:
@@ -25,7 +26,8 @@ services:
       - ./services/whatsapp/webhook_whatsapp/.env
     depends_on:
       - redis
-    # Note: In production, replace ngrok-whatsapp with a proper reverse proxy (e.g., Traefik) and remove the ngrok service
+    ports:
+      - "8000:8000"
 
   # WhatsApp message sender: sends messages to WhatsApp via the Business API
   whatsapp-sender:
@@ -49,7 +51,8 @@ services:
       - ./services/payment/webhook_payment/.env
     depends_on:
       - redis
-    # Note: In production, replace ngrok-mercadopago with a proper reverse proxy (e.g., Traefik) and remove the ngrok service
+    ports:
+      - "8002:8002"
 
   # Payment system: processes payment notifications, verifies, records, and may trigger messages
   payment-system:
@@ -107,7 +110,7 @@ services:
     env_file:
       - ./services/db/db_payments/.env
     ports:
-      - "5433:5433"
+      - "5433:5432"
 
   # RAG PostgreSQL DB with PGVector extension
   db_rag:

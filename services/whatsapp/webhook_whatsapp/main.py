@@ -16,6 +16,7 @@ app = FastAPI()
 redis_client = redis.Redis(
     host=os.getenv('REDIS_HOST', 'redis'),
     port=int(os.getenv('REDIS_PORT', 6379)),
+    password=os.getenv('REDIS_PASSWORD'),
     db=0,
     decode_responses=True  # To get strings instead of bytes
 )

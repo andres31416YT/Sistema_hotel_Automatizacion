@@ -3,14 +3,14 @@
 
 set -e
 
-# If REDIS_PASSWORD is set, we need to add requirepass to redis.conf
+CONF="/tmp/redis.conf"
+
+# Always write a config file
+echo "" > "$CONF"
+
+# If REDIS_PASSWORD is set, add requirepass
 if [ -n "$REDIS_PASSWORD" ]; then
-    # Create a temporary config file
-    TEMP_CONF="/tmp/redis.conf"
-    cp /usr/local/etc/redis/redis.conf "$TEMP_CONF"
-    echo "requirepass $REDIS_PASSWORD" >> "$TEMP_CONF"
-    exec redis-server "$TEMP_CONF"
-else
-    # No password, start normally
-    exec redis-server "$@"
+    echo "requirepass $REDIS_PASSWORD" >> "$CONF"
 fi
+
+exec redis-server "$CONF"
