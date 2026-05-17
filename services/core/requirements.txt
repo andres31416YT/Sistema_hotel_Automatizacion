@@ -1,7 +1,7 @@
-# Core service requirements
-# This service uses asyncpg for PostgreSQL database connections, redis-py for Redis, and python-dotenv for environment variables.
-# It also uses asyncio (built-in) and logging (built-in).
-
+fastapi==0.111.0
+uvicorn[standard]==0.30.6
 asyncpg==0.29.0
 redis==5.0.5
 python-dotenv==1.0.1
+httpx==0.27.0
+python-multipart==0.0.9

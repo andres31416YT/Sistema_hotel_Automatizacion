@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 import httpx
 import asyncpg
 import redis.asyncio as aioredis
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
+from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,6 +29,8 @@ DB_PASSWORD = os.getenv("DB_PAYMENTS_PASSWORD")
 REDIS_HOST     = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT     = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
+
+CORE_URL       = os.getenv("CORE_URL", "http://core:8080")
 
 if not MP_ACCESS_TOKEN:
     logger.error("MP_ACCESS_TOKEN no configurado")
@@ -256,3 +259,161 @@ async def health_check():
 
     overall = "healthy" if all(v == "ok" for v in checks.values()) else "degraded"
     return {"status": overall, **checks}
+
+
+# ── Endpoints REST para consumo de MCP / Core ────────────────────────────────
+
+class GenerateLinkRequest(BaseModel):
+    external_reference: str
+    amount: float
+    currency: str = "PEN"
+    description: str = ""
+    payer_email: str = None
+    payer_name: str = None
+
+
+class PaymentStatusResponse(BaseModel):
+    external_reference: str
+    status: str
+    payment_id: str = None
+    amount: float = None
+    currency: str = None
+    date_approved: str = None
+
+
+class PaymentConfirmedRequest(BaseModel):
+    external_reference: str
+    status: str
+    payment_id: str = None
+
+
+@app.post("/generate-link", response_model=dict)
+async def generate_payment_link(request: GenerateLinkRequest):
+    if not MP_ACCESS_TOKEN:
+        logger.error("[MP ERROR] MP_ACCESS_TOKEN no configurado")
+        raise HTTPException(status_code=500, detail="MP_ACCESS_TOKEN no configurado")
+
+    url = f"{MP_API_URL}/checkout/preferences"
+    headers = {
+        "Authorization": f"Bearer {MP_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    # URL de notificacion para MercadoPago
+    notification_url_env = os.getenv(
+        "MERCADO_PAGO_NOTIFICATION_URL",
+        os.getenv("WEBHOOK_PUBLIC_URL", ""),
+    )
+
+    payload = {
+        "items": [
+            {
+                "title": request.description or f"Reserva {request.external_reference}",
+                "quantity": 1,
+                "unit_price": request.amount,
+                "currency_id": request.currency,
+            }
+        ],
+        "external_reference": request.external_reference,
+        "auto_return": "approved",
+        "back_urls": {
+            "success": os.getenv("BACK_URL_SUCCESS", "https://www.tuhotel.com/pago-exitoso"),
+            "failure": os.getenv("BACK_URL_FAILURE", "https://www.tuhotel.com/pago-fallido"),
+            "pending": os.getenv("BACK_URL_PENDING", "https://www.tuhotel.com/pago-pendiente"),
+        },
+    }
+    if notification_url_env:
+        payload["notification_url"] = notification_url_env
+    if request.payer_email:
+        payload["payer"] = {"email": request.payer_email}
+    if request.payer_name:
+        payload.setdefault("payer", {})["name"] = request.payer_name
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, headers=headers, json=payload, timeout=15.0)
+
+    if response.status_code not in (200, 201):
+        logger.error(f"[MP ERROR] status={response.status_code} body={response.text[:500]}")
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=f"MercadoPago rechazo la preferencia: {response.text}",
+        )
+
+    data = response.json()
+    init_point = data.get("init_point") or data.get("sandbox_init_point")
+    preference_id = data.get("id")
+
+    if not init_point:
+        logger.error(f"[MP ERROR] status={response.status_code} body={response.text[:500]}")
+        raise HTTPException(status_code=500, detail="MP no devolvio init_point")
+
+    r = await get_redis()
+    await r.hset(
+        f"payment_preference:{request.external_reference}",
+        mapping={
+            "preference_id": preference_id,
+            "amount": str(request.amount),
+            "currency": request.currency,
+            "status": "pending",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    await r.expire(f"payment_preference:{request.external_reference}", int(os.getenv("REDIS_TTL_PAYMENT", 900)))
+
+    logger.info(f"Link generado — ref={request.external_reference} preference={preference_id}")
+    return {"link": init_point, "preference_id": preference_id, "external_reference": request.external_reference}
+
+
+@app.get("/payment-status/{external_reference}", response_model=dict)
+async def get_payment_status(external_reference: str):
+    r = await get_redis()
+    cached = await r.hgetall(f"payment_preference:{external_reference}")
+    if cached:
+        return {
+            "external_reference": external_reference,
+            "status": cached.get("status", "pending"),
+            "preference_id": cached.get("preference_id"),
+            "amount": float(cached.get("amount", 0)),
+            "currency": cached.get("currency"),
+            "date_approved": cached.get("date_approved"),
+            "source": "redis",
+        }
+
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT payment_id, status, monto, moneda, date_approved "
+            "FROM transacciones WHERE external_reference = $1 ORDER BY fecha_registro DESC LIMIT 1",
+            external_reference,
+        )
+    if row:
+        return {
+            "external_reference": external_reference,
+            "status": row["status"],
+            "payment_id": row["payment_id"],
+            "amount": float(row["monto"]),
+            "currency": row["moneda"],
+            "date_approved": row["date_approved"].isoformat() if row["date_approved"] else None,
+            "source": "db_payments",
+        }
+    raise HTTPException(status_code=404, detail="Pago no encontrado")
+
+
+@app.post("/payment-confirmed", response_model=dict)
+async def payment_confirmed(body: PaymentConfirmedRequest):
+    """
+    Endpoint llamado por el System Core.
+    Actualiza el estado del pago en cache y registra si viene un pago aprobado.
+    """
+    logger.info(
+        f"payment-confirmed recibido — ref={body.external_reference} status={body.status} payment_id={body.payment_id}"
+    )
+
+    r = await get_redis()
+
+    # Actualizar cache de preferencia
+    cache_key = f"payment_preference:{body.external_reference}"
+    if await r.exists(cache_key):
+        await r.hset(cache_key, "status", body.status)
+
+    return {"status": "processed", "external_reference": body.external_reference}

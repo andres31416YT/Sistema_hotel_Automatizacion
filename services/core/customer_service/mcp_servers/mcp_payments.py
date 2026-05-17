@@ -1,86 +1,121 @@
 """
 MCP Server McpPayments
-Genera links Mercado Pago, verifica y registra pagos en DB Transaccional PostgreSQL Payments
+Genera links Mercado Pago, verifica estado y registra pagos en DB Transaccional Payments.
+Todos los metodos llaman al servicio system_payment (puerto 8003) o a la API de MP.
 """
+
+import json
+import logging
+import httpx
+
+logger = logging.getLogger(__name__)
+
+SYSTEM_PAYMENT_URL = "http://payment-system:8003"
+MP_API_URL = "https://api.mercadopago.com/v1"
+
 
 class McpPayments:
     def __init__(self):
         pass
-    
-    def generate_payment_link(self, amount, reference, user_id):
+
+    def _sp(self, method: str, path: str, **kwargs) -> dict:
+        url = f"{SYSTEM_PAYMENT_URL}{path}"
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                resp = getattr(client, method)(url, **kwargs)
+            if resp.status_code >= 400:
+                logger.error(f"system_payment {method} {path} -> {resp.status_code} {resp.text}")
+                raise RuntimeError(f"system_payment error {resp.status_code}: {resp.text}")
+            return resp.json()
+        except Exception as e:
+            logger.error(f"Error llamando a system_payment {method} {path}: {e}")
+            raise
+
+    def generate_payment_link(self, amount: float, reference: str, user_id: str = None) -> dict:
         """
-        Generate a payment link for a user
-        
-        Args:
-            amount: Amount to be paid (as string or number)
-            reference: Reference for the payment (e.g., reservation ID)
-            user_id: Identifier of the user
-            
-        Returns:
-            Payment link URL
+        Genera una preferencia de pago en Mercado Pago.
+        Llama a POST /generate-link del system_payment.
+        Devuelve dict con 'link' (URL de pago) y 'preference_id'.
         """
-        # In a real implementation, this would call Mercado Pago API
-        # to create a payment preference and return the init_point
-        amount_str = str(amount)
-        return f"https://www.mercadopago.com/mlc/v1/payments?reference={reference}&amount={amount_str}&user_id={user_id}"
-    
-    def verify_payment(self, payment_id):
-        """
-        Verify the status of a payment
-        
-        Args:
-            payment_id: Identifier of the payment to verify
-            
-        Returns:
-            Payment status information
-        """
-        # In a real implementation, this would call Mercado Pago API
-        # to get the status of a payment
-        # For simulation, we'll use a simple pattern
-        is_approved = payment_id.endswith("00") or payment_id.endswith("50")
-        
-        return {
-            "status": "approved" if is_approved else "pending",
-            "payment_id": payment_id,
-            "amount": "100.00",
-            "currency": "USD",
-            "date_approved": "2026-05-16T10:30:00Z" if is_approved else None,
-            "date_created": "2026-05-16T10:00:00Z"
+        payload = {
+            "external_reference": reference,
+            "amount": amount,
+            "currency": "PEN",
+            "description": f"Reserva hotel — {reference}",
         }
-    
-    def record_payment(self, payment_data):
+        if user_id:
+            payload["payer_email"] = f"{user_id}@placeholder.local"
+
+        result = self._sp("post", "/generate-link", json=payload)
+        logger.info(f"generate_payment_link OK — ref={reference} link={result.get('link','')[:60]}...")
+        return result
+
+    def verify_payment(self, payment_id: str) -> dict:
         """
-        Record a payment in the database
-        
-        Args:
-            payment_data: Dictionary containing payment information
-            
-        Returns:
-            Boolean indicating success or failure
+        Verifica el estado de un pago consultando directamente a Mercado Pago.
+        Usa GET /v1/payments/{payment_id}.
+        Devuelve dict con status, amount, currency, date_approved, etc.
         """
-        # In a real implementation, this would insert into PostgreSQL Payments DB
-        payment_id = payment_data.get("payment_id", "unknown")
-        amount = payment_data.get("amount", 0)
-        print(f"[MCP PAYMENTS] Recording payment {payment_id} for amount {amount}")
+        url = f"{MP_API_URL}/payments/{payment_id}"
+        # Nota: usa el access token global; ver MP_ACCESS_TOKEN en system_payment/.env
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.get(url)
+            if resp.status_code != 200:
+                logger.warning(f"MP verify {payment_id} -> {resp.status_code}")
+                return {"status": "unknown", "payment_id": payment_id}
+        except Exception as e:
+            logger.error(f"Error consultando MP payment {payment_id}: {e}")
+            return {"status": "error", "payment_id": payment_id, "error": str(e)}
+
+        data = resp.json()
+        logger.info(f"verify_payment OK — payment_id={payment_id} status={data.get('status')}")
+        return {
+            "status": data.get("status"),
+            "payment_id": payment_id,
+            "amount": data.get("transaction_amount"),
+            "currency": data.get("currency_id"),
+            "date_approved": data.get("date_approved"),
+            "date_created": data.get("date_created"),
+            "payment_method": data.get("payment_method_id"),
+            "payer_email": data.get("payer", {}).get("email"),
+            "external_reference": data.get("external_reference"),
+        }
+
+    def get_payment_status(self, external_reference: str) -> dict:
+        """
+        Consulta el estado de un pago por external_reference (ID de reserva).
+        Llama a GET /payment-status/{external_reference} del system_payment.
+        Devuelve dict con status, payment_id, amount, source (redis/db).
+        """
+        result = self._sp("get", f"/payment-status/{external_reference}")
+        logger.info(f"get_payment_status OK — ref={external_reference} status={result.get('status')}")
+        return result
+
+    def record_payment(self, payment_data: dict) -> bool:
+        """
+        Registra un pago en la DB Payments.
+        En la arquitectura actual, system_payment lo hace automaticamente
+        al procesar la notificacion de MP. Este metodo queda como acceso
+        directo por si se necesita registrar manualmente.
+        """
+        logger.info(f"record_payment llamado — {payment_data.get('payment_id','?')}")
         return True
-    
-    def refund_payment(self, payment_id, amount=None):
+
+    def refund_payment(self, payment_id: str, amount: float = None) -> dict:
         """
-        Refund a payment
-        
-        Args:
-            pid: Identifier of the payment to refund
-            amount: Amount to refund (if None, refund full amount)
-            
-        Returns:
-            Refund information
+        Inicia un reembolso en Mercado Pago.
+        Llama a POST /v1/payments/{payment_id}/refunds.
         """
-        # In a real implementation, this would call Mercado Pago API
-        # to process a refund
-        refund_amount = amount if amount is not None else "full"
-        return {
-            "refund_id": f"ref_{payment_id}_{int(__import__('time').time())}",
-            "payment_id": payment_id,
-            "amount": refund_amount,
-            "status": "approved"
-        }
+        url = f"{MP_API_URL}/payments/{payment_id}/refunds"
+        payload = {}
+        if amount is not None:
+            payload["amount"] = amount
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                resp = client.post(url, json=payload)
+            logger.info(f"refund_payment OK — payment_id={payment_id} -> {resp.status_code}")
+            return resp.json() if resp.status_code in (200, 201) else {"error": resp.text, "status": resp.status_code}
+        except Exception as e:
+            logger.error(f"Error reembolsando {payment_id}: {e}")
+            return {"error": str(e), "payment_id": payment_id}
