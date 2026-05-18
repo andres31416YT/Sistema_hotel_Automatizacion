@@ -48,6 +48,9 @@ OLLAMA_MODEL              = os.getenv("OLLAMA_MODEL",              "qwen2.5:3b-i
 CONTEXT_WINDOW_SIZE       = int(os.getenv("CONTEXT_WINDOW_SIZE",  80))   # mensajes de historial por usuario
 RESERVATION_AMOUNT        = float(os.getenv("RESERVATION_AMOUNT", "150.0"))  # monto default para pago de reserva
 RESERVATION_DESCRIPTION   = os.getenv("RESERVATION_DESCRIPTION", "Reserva de habitacion")  # descripcion del pago
+CURRENT_DATETIME          = datetime.now().strftime("%Y-%m-%d %H:%M")  # fecha/hora actual para inyectar en prompts
+CURRENT_DATE              = datetime.now().strftime("%Y-%m-%d")         # solo fecha para comparaciones
+CURRENT_DATE_PRETTY       = datetime.now().strftime("%-d de %B de %Y") # ej: "18 de mayo de 2026"
 
 DB_HOTEL = {
     "host":     os.getenv("DB_HOTEL_HOST"),
@@ -416,8 +419,16 @@ async def _build_reply(text: str, name: str, history: list[dict] | None = None) 
     """
     from prompts.customer_service.agents import PROMPT_LLM_HUESPED  # noqa
 
+    # Inyectar fecha/hora actual en el prompt (3 formatos)
+    system_prompt = (
+        PROMPT_LLM_HUESPED
+        .replace("{{CURRENT_DATETIME}}", CURRENT_DATETIME)
+        .replace("{{CURRENT_DATE}}",     CURRENT_DATE)
+        .replace("{{CURRENT_DATE_PRETTY}}", CURRENT_DATE_PRETTY)
+    )
+
     # ── Construir mensajes en formato OpenAI ────────────────────────────────────
-    messages: list[dict] = [{"role": "system", "content": PROMPT_LLM_HUESPED}]
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
     if history:
         messages.extend(history[-(CONTEXT_WINDOW_SIZE * 2):])  # últimos N turnos
     messages.append({"role": "user", "content": text})
@@ -444,9 +455,9 @@ async def _build_reply(text: str, name: str, history: list[dict] | None = None) 
     except Exception as e:
         logger.warning(f"[LLM] Ollama fallo ({e}), usando fallback")
 
-    # ── Fallback a reglas predefinidas (cuando Ollama no responde) ───────────────
+    # ── Fallback a reglas predefinidas ───────────────────────────────────────────
     t = text.lower().strip()
-    if any(w in t for w in ["hola", "buenas", "buenos dias", "buenas tardes"]):
+    if any(w in t for w in ["hola", "buenas", "buenos dias", "buenos dias", "buenos dias", "buenos dias"]):
         return (
             f"Hola {name}! Bienvenido al hotel. "
             "Escribe 'disponibilidad', 'pago' o 'info' para continuar."
@@ -518,6 +529,16 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
         logger.warning(f"[LLM-ADMIN] Ollama fallo ({e})")
 
     return f"Recibi tu consulta, {name}. Estoy procesando la solicitud administrativa."
+
+
+def _detect_intent(text: str) -> str:
+    """
+    Clasifica el texto del usuario en una intencion.
+    Se usa en AdminCheckRequest y otras rutas que no pasan por _build_reply_admin.
+    """
+    t = text.lower().strip()
+    if any(w in t for w in ["fecha", "hoy", "dia", "semana"]):
+        return "consultar_fecha"
 
 
 def _is_new_user_intent(text: str) -> bool:
