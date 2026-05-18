@@ -25,17 +25,14 @@ from customer_service.mcp_servers.mcp_payments import McpPayments  # noqa: E402
 sys.stdout.reconfigure(line_buffering=True)
 
 logger = logging.getLogger("core")
-handler = logging.StreamHandler(sys.stderr)
-handler.setLevel(logging.DEBUG)
-handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(handler)
 logger.setLevel(logging.DEBUG)
-logger.addHandler(handler)
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s %(levelname)s %(message)s",
-    force=True,
-)
+
 
 app = FastAPI(title="System Core — Hotel Automatizacion")
 
@@ -48,9 +45,6 @@ OLLAMA_MODEL              = os.getenv("OLLAMA_MODEL",              "qwen2.5:3b-i
 CONTEXT_WINDOW_SIZE       = int(os.getenv("CONTEXT_WINDOW_SIZE",  80))   # mensajes de historial por usuario
 RESERVATION_AMOUNT        = float(os.getenv("RESERVATION_AMOUNT", "150.0"))  # monto default para pago de reserva
 RESERVATION_DESCRIPTION   = os.getenv("RESERVATION_DESCRIPTION", "Reserva de habitacion")  # descripcion del pago
-CURRENT_DATETIME          = datetime.now().strftime("%Y-%m-%d %H:%M")  # fecha/hora actual para inyectar en prompts
-CURRENT_DATE              = datetime.now().strftime("%Y-%m-%d")         # solo fecha para comparaciones
-CURRENT_DATE_PRETTY       = datetime.now().strftime("%-d de %B de %Y") # ej: "18 de mayo de 2026"
 
 DB_HOTEL = {
     "host":     os.getenv("DB_HOTEL_HOST"),
@@ -141,13 +135,6 @@ async def _save_turn(phone: str, user_msg: str, assistant_reply: str, redis_clie
         )
     except Exception:
         pass
-
-
-@app.on_event("startup")
-async def startup():
-    get_admin_phones()  # precarga al iniciar
-    asyncio.create_task(_worker_wa())
-    logger.info("[STARTUP] Worker WA lanzado")
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
@@ -419,16 +406,8 @@ async def _build_reply(text: str, name: str, history: list[dict] | None = None) 
     """
     from prompts.customer_service.agents import PROMPT_LLM_HUESPED  # noqa
 
-    # Inyectar fecha/hora actual en el prompt (3 formatos)
-    system_prompt = (
-        PROMPT_LLM_HUESPED
-        .replace("{{CURRENT_DATETIME}}", CURRENT_DATETIME)
-        .replace("{{CURRENT_DATE}}",     CURRENT_DATE)
-        .replace("{{CURRENT_DATE_PRETTY}}", CURRENT_DATE_PRETTY)
-    )
-
     # ── Construir mensajes en formato OpenAI ────────────────────────────────────
-    messages: list[dict] = [{"role": "system", "content": system_prompt}]
+    messages: list[dict] = [{"role": "system", "content": PROMPT_LLM_HUESPED}]
     if history:
         messages.extend(history[-(CONTEXT_WINDOW_SIZE * 2):])  # últimos N turnos
     messages.append({"role": "user", "content": text})
@@ -744,3 +723,13 @@ async def test_llm(body: LLMTestRequest):
             fb_history = []
         reply = await _build_reply(body.message, body.name, fb_history)
     return {"reply": reply}
+
+
+# ── Lanzar worker de WhatsApp al arrancar ───────────────────────────────────────
+# Se ejecuta DESPUÉS de que uvicorn termine de levantar la app,
+# para no interferir con el event-loop de FastAPI durante el startup.
+@app.on_event("startup")
+async def _launch_worker():
+    get_admin_phones()            # precarga de admins
+    asyncio.create_task(_worker_wa())
+    logger.info("[STARTUP] Worker WA lanzado")

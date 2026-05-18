@@ -7,6 +7,7 @@ Todos los metodos llaman al servicio system_payment (puerto 8003) o a la API de 
 import json
 import logging
 import httpx
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +37,12 @@ class McpPayments:
         Genera una preferencia de pago en Mercado Pago.
         Llama a POST /generate-link del system_payment.
         Devuelve dict con 'link' (URL de pago) y 'preference_id'.
+        Se agrega la fecha actual al final de la referencia (ej: WA_51918674173_2026-05-18).
         """
+        now_date = datetime.now().strftime("%Y-%m-%d")
+        external_ref = f"{reference}_{now_date}"
         payload = {
-            "external_reference": reference,
+            "external_reference": external_ref,
             "amount": amount,
             "currency": "PEN",
             "description": f"Reserva hotel — {reference}",
