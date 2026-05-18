@@ -13,6 +13,7 @@ import httpx
 import redis
 import redis.asyncio as aioredis
 import asyncpg
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 from fastapi import FastAPI, Request, HTTPException
@@ -41,6 +42,7 @@ SYSTEM_PAYMENT_URL        = os.getenv("SYSTEM_PAYMENT_URL",        "http://payme
 SYSTEM_WHATSAPP_SENDER_URL = os.getenv("SYSTEM_WHATSAPP_SENDER_URL", "http://whatsapp-sender:8001")
 OLLAMA_API_URL            = os.getenv("OLLAMA_API_URL",            "http://ollama:11434")
 OLLAMA_MODEL              = os.getenv("OLLAMA_MODEL",              "qwen2.5:3b-instruct")
+CONTEXT_WINDOW_SIZE       = int(os.getenv("CONTEXT_WINDOW_SIZE",  10))   # mensajes de historial por usuario
 
 DB_HOTEL = {
     "host":     os.getenv("DB_HOTEL_HOST"),
@@ -76,11 +78,68 @@ from core_auth_settings import is_admin, get_admin_phones  # noqa: E402
 _reservas: dict = {}
 _reservas_lock = asyncio.Lock()
 
+# Memoria de corto plazo: historial de conversación por número de teléfono
+# Cada entrada es una lista de dicts {role, content}
+_chat_history: dict[str, deque] = {}
+_chat_history_lock = asyncio.Lock()
+
+
+def _format_history(history: list[dict]) -> str:
+    """Formatea el historial como string para incluirlo en el prompt del LLM."""
+    if not history:
+        return ""
+    lines = ["[Historial de conversacion anterior]"]
+    for msg in history:
+        role = "Huesped" if msg["role"] == "user" else "Asistente"
+        lines.append(f"{role}: {msg['content']}")
+    lines.append("[Fin del historial]")
+    return "\n".join(lines)
+
+
+async def _get_history(phone: str, redis_client: aioredis.Redis) -> list[dict]:
+    """Obtiene el historial de conversación de Redis (persistente) + memoria en caliente."""
+    async with _chat_history_lock:
+        if phone in _chat_history:
+            return list(_chat_history[phone])
+
+    # Fallback a Redis
+    try:
+        raw = await redis_client.get(f"chat_history:{phone}")
+        if raw:
+            data = json.loads(raw)
+            # Recalentar buffer en memoria
+            async with _chat_history_lock:
+                _chat_history[phone] = deque(data, maxlen=CONTEXT_WINDOW_SIZE * 2)
+            return data
+    except Exception:
+        pass
+    return []
+
+
+async def _save_turn(phone: str, user_msg: str, assistant_reply: str, redis_client: aioredis.Redis) -> None:
+    """Guarda el turno completo en Redis y actualiza el buffer en memoria."""
+    async with _chat_history_lock:
+        if phone not in _chat_history:
+            _chat_history[phone] = deque(maxlen=CONTEXT_WINDOW_SIZE * 2)
+        _chat_history[phone].append({"role": "user",      "content": user_msg})
+        _chat_history[phone].append({"role": "assistant", "content": assistant_reply})
+
+    try:
+        history = list(_chat_history[phone])
+        await redis_client.set(
+            f"chat_history:{phone}",
+            json.dumps(history),
+            ex=int(os.getenv("REDIS_TTL_CHAT", 1800)),
+        )
+    except Exception:
+        pass
+
 
 @app.on_event("startup")
 async def startup():
     get_admin_phones()  # precarga al iniciar
     asyncio.create_task(_worker_wa())
+    logger.info("[STARTUP] Worker WA lanzado")
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
@@ -344,32 +403,39 @@ async def _send_wa_message(to: str, text: str) -> None:
         logger.error(f"[WA WORKER] Exception enviando a {to}: {e}")
 
 
-async def _build_reply(text: str, name: str) -> str:
+async def _build_reply(text: str, name: str, history: list[dict] | None = None) -> str:
     """
-    Genera una respuesta usando Ollama (LLM local) en lugar de reglas fijas.
+    Genera una respuesta usando Ollama (LLM local) via /v1/chat/completions.
+    Incluye el historial de conversación del usuario para mantener el contexto.
     Si Ollama no esta disponible, cae a reglas predefinidas.
     """
     from prompts.customer_service.agents import PROMPT_LLM_HUESPED  # noqa
 
-    system_prompt = PROMPT_LLM_HUESPED
+    # ── Construir mensajes en formato OpenAI ────────────────────────────────────
+    messages: list[dict] = [{"role": "system", "content": PROMPT_LLM_HUESPED}]
+    if history:
+        messages.extend(history[-(CONTEXT_WINDOW_SIZE * 2):])  # últimos N turnos
+    messages.append({"role": "user", "content": text})
 
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
-                f"{OLLAMA_API_URL}/api/generate",
+                f"{OLLAMA_API_URL}/v1/chat/completions",
                 json={
                     "model": OLLAMA_MODEL,
-                    "prompt": f"{system_prompt}\n\nHuesped: {text}\nAsistente:",
+                    "messages": messages,
                     "stream": False,
                 },
             )
         if resp.status_code == 200:
             data = resp.json()
-            reply = (data.get("response") or "").strip()
-            if reply:
-                return reply
+            choices = data.get("choices", [])
+            if choices:
+                reply = (choices[0].get("message", {}).get("content") or "").strip()
+                if reply:
+                    return reply
         else:
-            logger.warning(f"[LLM] Ollama status={resp.status_code}")
+            logger.warning(f"[LLM] Ollama /v1/chat/completions status={resp.status_code}")
     except Exception as e:
         logger.warning(f"[LLM] Ollama fallo ({e}), usando fallback")
 
@@ -412,30 +478,37 @@ async def _build_reply(text: str, name: str) -> str:
     )
 
 
-async def _build_reply_admin(text: str, name: str) -> str:
+async def _build_reply_admin(text: str, name: str, history: list[dict] | None = None) -> str:
     """
-    Genera una respuesta para administradores usando Ollama.
+    Genera una respuesta para administradores usando Ollama via /v1/chat/completions.
     Prompt con contexto de admin: acceso completo, puede ver todo.
+    Incluye historial de conversación para mantener el contexto.
     """
     from prompts.admin_service.agents import PROMPT_LLM_ADMIN  # noqa
 
-    system_prompt = PROMPT_LLM_ADMIN
+    # ── Construir mensajes en formato OpenAI ────────────────────────────────────
+    messages: list[dict] = [{"role": "system", "content": PROMPT_LLM_ADMIN}]
+    if history:
+        messages.extend(history[-(CONTEXT_WINDOW_SIZE * 2):])  # últimos N turnos
+    messages.append({"role": "user", "content": text})
 
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
-                f"{OLLAMA_API_URL}/api/generate",
+                f"{OLLAMA_API_URL}/v1/chat/completions",
                 json={
                     "model": OLLAMA_MODEL,
-                    "prompt": f"{system_prompt}\n\nAdmin ({name}): {text}\nAsistente:",
+                    "messages": messages,
                     "stream": False,
                 },
             )
         if resp.status_code == 200:
             data = resp.json()
-            reply = (data.get("response") or "").strip()
-            if reply:
-                return reply
+            choices = data.get("choices", [])
+            if choices:
+                reply = (choices[0].get("message", {}).get("content") or "").strip()
+                if reply:
+                    return reply
     except Exception as e:
         logger.warning(f"[LLM-ADMIN] Ollama fallo ({e})")
 
@@ -445,79 +518,115 @@ async def _build_reply_admin(text: str, name: str) -> str:
 async def _worker_wa() -> None:
     """Worker principal que consume la cola 'whatsapp_in' via BRPOP."""
     logger.info("[WA WORKER] Iniciado — escuchando cola whatsapp_in")
-    r = aioredis.Redis(
-        host=REDIS_HOST, port=REDIS_PORT,
-        password=REDIS_PASSWORD, decode_responses=True,
-    )
+    r = None
     processed = 0
     while True:
         try:
-            logger.debug("[WA WORKER] Esperando mensaje en cola whatsapp_in...")
-            result = await r.brpop("whatsapp_in", timeout=5)
-            logger.debug(f"[WA WORKER] brpop resultado: {result}")
-            if result is None:
-                continue
-            _, raw = result
-            msg = _parse_wa_message(raw)
-            logger.debug(f"[WA PARSER] resultado: phone={msg.get('phone')!r}  text={msg.get('text')!r}  keys={list(msg.keys())}")
-            if not msg or not msg.get("phone"):
-                logger.warning(f"[WA WORKER] Mensaje sin telefono (raw[:120]={raw[:120]!r}) — ignorado")
-                continue
-
-            text = (msg.get("text") or "").strip()
-
-            # ── Filtro: mensajes vacíos no se procesan ──────────────────────────────
-            if not text:
-                continue
-
-            processed += 1
-            logger.info(
-                f"[WA WORKER] #{processed} De {msg['phone']} ({msg.get('name','?')}): "
-                f"{text[:80]!r}"
+            if r is None:
+                r = aioredis.Redis(
+                host=REDIS_HOST, port=REDIS_PORT,
+                password=REDIS_PASSWORD, decode_responses=True,
             )
-
-            # ── Regla 1: seguridad pasa siempre (admins no se bloquean) ───────────
-            is_adm = is_admin(msg["phone"])
-
-            # ── Regla 2: validacion de seguridad (admins inmunes) ─────────────────
-            from customer_service.mcp_servers.mcp_security import McpSecurity
-            sec = McpSecurity()
-            if not is_adm and not sec.validate_sender(msg["phone"]):
-                logger.warning(f"[WA WORKER] Remitente no autorizado {msg['phone']}")
-                continue
-            if not is_adm and not sec.validate_message_content(text, msg["phone"]):
-                logger.warning(f"[WA WORKER] Contenido bloqueado de {msg['phone']}")
+            logger.info("[WA WORKER] Redis conectado")
+            processed = 0
+            while True:
                 try:
-                    await _send_wa_message(
-                        msg["phone"],
-                        "Lo siento, no puedo procesar ese mensaje. "
-                        "Contacta al administrador si crees que es un error.",
+                    logger.debug("[WA WORKER] Esperando mensaje en cola whatsapp_in...")
+                    result = await r.brpop("whatsapp_in", timeout=5)
+                    logger.debug(f"[WA WORKER] brpop resultado: {result}")
+                    if result is None:
+                        continue
+                    _, raw = result
+                    msg = _parse_wa_message(raw)
+                    logger.debug(f"[WA PARSER] resultado: phone={msg.get('phone')!r}  text={msg.get('text')!r}  keys={list(msg.keys())}")
+                    if not msg or not msg.get("phone"):
+                        logger.warning(f"[WA WORKER] Mensaje sin telefono (raw[:120]={raw[:120]!r}) — ignorado")
+                        continue
+
+                    text = (msg.get("text") or "").strip()
+
+                    # ── Filtro: mensajes vacíos no se procesan ──────────────────────────────
+                    if not text:
+                        continue
+
+                    processed += 1
+                    logger.info(
+                        f"[WA WORKER] #{processed} De {msg['phone']} ({msg.get('name','?')}): "
+                        f"{text[:80]!r}"
                     )
-                except Exception:
-                    pass
-                continue
 
-            # ── Regla 3: responder con LLM (adaptado admin / huesped) ────────────
+                    # ── Regla 1: seguridad pasa siempre (admins no se bloquean) ───────────
+                    is_adm = is_admin(msg["phone"])
+
+                    # ── Regla 2: validacion de seguridad (admins inmunes) ─────────────────
+                    from customer_service.mcp_servers.mcp_security import McpSecurity
+                    sec = McpSecurity()
+                    if not is_adm and not sec.validate_sender(msg["phone"]):
+                        logger.warning(f"[WA WORKER] Remitente no autorizado {msg['phone']}")
+                        continue
+                    if not is_adm and not sec.validate_message_content(text, msg["phone"]):
+                        logger.warning(f"[WA WORKER] Contenido bloqueado de {msg['phone']}")
+                        try:
+                            await _send_wa_message(
+                                msg["phone"],
+                                "Lo siento, no puedo procesar ese mensaje. "
+                                "Contacta al administrador si crees que es un error.",
+                            )
+                        except Exception:
+                            pass
+                        continue
+
+                    # ── Regla 3: recuperar historial y responder con LLM ──────────────────
+                    history: list[dict] = []
+                    try:
+                        history = await _get_history(msg["phone"], r)
+                        logger.debug(
+                            f"[HISTORY] Telefono={msg['phone']} — {len(history)} mensajes en contexto"
+                        )
+                    except Exception as e:
+                        logger.warning(f"[HISTORY] No se pudo recuperar historial: {e}")
+
+                    try:
+                        reply = (
+                            await _build_reply_admin(text, msg.get("name", "Admin"), history)
+                            if is_adm else
+                            await _build_reply(text, msg.get("name", "Usuario"), history)
+                        )
+                    except Exception as e:
+                        logger.error(f"[WA WORKER] LLM fallo: {e}")
+                        reply = "Gracias por tu mensaje. En este momento el asistente no esta disponible."
+
+                    try:
+                        await _send_wa_message(msg["phone"], reply)
+                    except Exception as e:
+                        logger.error(f"[WA WORKER] No se pudo enviar respuesta a {msg['phone']}: {e}")
+
+                    # ── Guardar turno en Redis para proximo mensaje ────────────────────────
+                    try:
+                        await _save_turn(msg["phone"], text, reply, r)
+                    except Exception as e:
+                        logger.warning(f"[HISTORY] No se pudo guardar turno: {e}")
+
+                except asyncio.CancelledError:
+                    logger.info("[WA WORKER] Cancelado — saliendo limpiamente")
+                    break
+                except Exception as e:
+                    logger.error(f"[WA WORKER] Error procesando mensaje: {e}", exc_info=True)
+                    await asyncio.sleep(1)
+            # ── Fin del while True interno ──────────────────────────────────────────
+
+        except Exception as e:
+            logger.error(f"[WA WORKER] Error critico: {e}", exc_info=True)
+            logger.info("[WA WORKER] Reiniciando en 5s...")
             try:
-                reply = (
-                    await _build_reply_admin(text, msg.get("name", "Admin"))
-                    if is_adm else
-                    await _build_reply(text, msg.get("name", "Usuario"))
-                )
-            except Exception as e:
-                logger.error(f"[WA WORKER] LLM fallo: {e}")
-                reply = "Gracias por tu mensaje. En este momento el asistente no esta disponible."
-
-            try:
-                await _send_wa_message(msg["phone"], reply)
-            except Exception as e:
-                logger.error(f"[WA WORKER] No se pudo enviar respuesta a {msg['phone']}: {e}")
-
+                await r.close()
+            except Exception:
+                pass
+            r = None
+            await asyncio.sleep(5)
         except asyncio.CancelledError:
             logger.info("[WA WORKER] Cancelado — saliendo limpiamente")
             break
-        except Exception as e:
-            logger.error(f"[WA WORKER] Error procesando mensaje: {e}", exc_info=True)
 
 
 # ── Info ──────────────────────────────────────────────────────────────────────
@@ -535,5 +644,21 @@ class LLMTestRequest(BaseModel):
 @app.post("/", response_model=dict)
 async def test_llm(body: LLMTestRequest):
     """Prueba el LLM: envia un mensaje y devuelve la respuesta generada."""
-    reply = await _build_reply(body.message, body.name)
+    # Recuperar historial y pasarlo al LLM
+    try:
+        r_test = aioredis.Redis(host=REDIS_HOST, port=REDIS_PORT,
+                                password=REDIS_PASSWORD, decode_responses=True)
+        history = await _get_history("test_llm", r_test)
+        reply = await _build_reply(body.message, body.name, history)
+        await _save_turn("test_llm", body.message, reply, r_test)
+        await r_test.close()
+    except Exception:
+        try:
+            r_fb = aioredis.Redis(host=REDIS_HOST, port=REDIS_PORT,
+                                  password=REDIS_PASSWORD, decode_responses=True)
+            fb_history = await _get_history("test_llm", r_fb)
+            await r_fb.close()
+        except Exception:
+            fb_history = []
+        reply = await _build_reply(body.message, body.name, fb_history)
     return {"reply": reply}
