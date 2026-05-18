@@ -343,7 +343,7 @@ async def _build_reply(text: str, name: str) -> str:
     Genera una respuesta usando Ollama (LLM local) en lugar de reglas fijas.
     Si Ollama no esta disponible, cae a reglas predefinidas.
     """
-    from core.prompts.customer_service.agents import PROMPT_LLM_HUESPED  # noqa
+    from prompts.customer_service.agents import PROMPT_LLM_HUESPED  # noqa
 
     system_prompt = PROMPT_LLM_HUESPED
 
@@ -411,7 +411,7 @@ async def _build_reply_admin(text: str, name: str) -> str:
     Genera una respuesta para administradores usando Ollama.
     Prompt con contexto de admin: acceso completo, puede ver todo.
     """
-    from core.prompts.admin_service.agents import PROMPT_LLM_ADMIN  # noqa
+    from prompts.admin_service.agents import PROMPT_LLM_ADMIN  # noqa
 
     system_prompt = PROMPT_LLM_ADMIN
 
