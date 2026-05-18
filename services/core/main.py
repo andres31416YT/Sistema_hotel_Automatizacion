@@ -19,6 +19,9 @@ from typing import Any
 from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 
+# ── MCP Servers ────────────────────────────────────────────────────────────────
+from customer_service.mcp_servers.mcp_payments import McpPayments  # noqa: E402
+
 sys.stdout.reconfigure(line_buffering=True)
 
 logger = logging.getLogger("core")
@@ -42,7 +45,9 @@ SYSTEM_PAYMENT_URL        = os.getenv("SYSTEM_PAYMENT_URL",        "http://payme
 SYSTEM_WHATSAPP_SENDER_URL = os.getenv("SYSTEM_WHATSAPP_SENDER_URL", "http://whatsapp-sender:8001")
 OLLAMA_API_URL            = os.getenv("OLLAMA_API_URL",            "http://ollama:11434")
 OLLAMA_MODEL              = os.getenv("OLLAMA_MODEL",              "qwen2.5:3b-instruct")
-CONTEXT_WINDOW_SIZE       = int(os.getenv("CONTEXT_WINDOW_SIZE",  10))   # mensajes de historial por usuario
+CONTEXT_WINDOW_SIZE       = int(os.getenv("CONTEXT_WINDOW_SIZE",  80))   # mensajes de historial por usuario
+RESERVATION_AMOUNT        = float(os.getenv("RESERVATION_AMOUNT", "150.0"))  # monto default para pago de reserva
+RESERVATION_DESCRIPTION   = os.getenv("RESERVATION_DESCRIPTION", "Reserva de habitacion")  # descripcion del pago
 
 DB_HOTEL = {
     "host":     os.getenv("DB_HOTEL_HOST"),
@@ -515,6 +520,50 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
     return f"Recibi tu consulta, {name}. Estoy procesando la solicitud administrativa."
 
 
+def _is_new_user_intent(text: str) -> bool:
+    """
+    Detecta si el mensaje refleja la intencion de un nuevo usuario que se registra.
+    Palabras clave: 'hola', 'buenas', 'nuevo', 'registrar', 'reservar', 'quiero reservar'.
+    """
+    t = text.lower().strip()
+    return (
+        any(w in t for w in ["hola", "buenas", "buenos dias", "buenas tardes", "buenas noches", "saludos"])
+        and len(t) < 300  # evita falsos positivos en mensajes largos
+    )
+
+
+async def _generate_payment_link(phone: str, name: str, text: str) -> str | None:
+    """
+    Genera un link de pago MercadoPago para un cliente nuevo que desea reservar.
+    Devuelve el texto del link listo para enviar, o None si falla.
+    """
+    try:
+        external_ref = f"WA_{phone}"
+        description = f"{RESERVATION_DESCRIPTION} — {name} ({phone})"
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: McpPayments().generate_payment_link(
+                amount=RESERVATION_AMOUNT,
+                reference=external_ref,
+                user_id=phone,
+            ),
+        )
+        link = result.get("link", "")
+        preference_id = result.get("preference_id", "")
+        if link:
+            logger.info(f"[PAYMENT] Link generado para {phone} — pref={preference_id}")
+            return (
+                f"Bienvenido/a al hotel, {name}! 😊\n\n"
+                f"Para confirmar tu reserva necesito completar el pago de S/{RESERVATION_AMOUNT:.2f}.\n\n"
+                f"Puedes pagar aqui:\n{link}\n\n"
+                f"Una vez realizado el pago, te confirmare tu reserva automaticamente."
+            )
+    except Exception as e:
+        logger.warning(f"[PAYMENT] No se pudo generar link para {phone}: {e}")
+    return None
+
+
 async def _worker_wa() -> None:
     """Worker principal que consume la cola 'whatsapp_in' via BRPOP."""
     logger.info("[WA WORKER] Iniciado — escuchando cola whatsapp_in")
@@ -586,6 +635,17 @@ async def _worker_wa() -> None:
                     except Exception as e:
                         logger.warning(f"[HISTORY] No se pudo recuperar historial: {e}")
 
+                    # ── Regla 4: si es un huesped nuevo y menciona reserva, generar link de pago ──
+                    _payment_note: str | None = None
+                    is_new_user = not history
+                    if is_new_user and not is_adm and _is_new_user_intent(text):
+                        logger.info(
+                            f"[PAYMENT] Nuevo usuario detectado {msg['phone']} — intentando generar link"
+                        )
+                        _payment_note = await _generate_payment_link(
+                            msg["phone"], msg.get("name", "Usuario"), text
+                        )
+
                     try:
                         reply = (
                             await _build_reply_admin(text, msg.get("name", "Admin"), history)
@@ -595,6 +655,10 @@ async def _worker_wa() -> None:
                     except Exception as e:
                         logger.error(f"[WA WORKER] LLM fallo: {e}")
                         reply = "Gracias por tu mensaje. En este momento el asistente no esta disponible."
+
+                    # ── Adjuntar link de pago si se genero ────────────────────────────────
+                    if _payment_note:
+                        reply = f"{_payment_note}\n\n{reply}"
 
                     try:
                         await _send_wa_message(msg["phone"], reply)
