@@ -3,8 +3,12 @@ MCP Server McpRouter
 Enruta mensajes entre agentes y orquesta el flujo
 """
 
+from .mcp_datetime import McpDateTime  # noqa: E402
+
+
 class McpRouter:
     def __init__(self):
+        self.datetime = McpDateTime()
         pass
     
     def route_message(self, message, sender_id, intent, entities):

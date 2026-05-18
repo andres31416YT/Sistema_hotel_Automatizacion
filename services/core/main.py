@@ -406,8 +406,23 @@ async def _build_reply(text: str, name: str, history: list[dict] | None = None) 
     """
     from prompts.customer_service.agents import PROMPT_LLM_HUESPED  # noqa
 
+    # ── Contexto de fecha/hora actual ───────────────────────────────────────────
+    from customer_service.mcp_servers.mcp_datetime import get_current_datetime, get_day_of_week  # noqa
+    _dt_info  = get_current_datetime(format="pretty")
+    _dt_date  = get_current_datetime(format="date")
+    _dt_day   = get_day_of_week()
+    _date_block = (
+        f"FECHA Y HORA ACTUAL (zona horaria Peru, UTC-5):\n"
+        f"  Ahora es: {_dt_info['result']}\n"
+        f"  Hoy es:   {_dt_day['result']}, {_dt_date['result']}\n"
+        f"Usa esta informacion para calcular fechas, vencimientos, dias de la semana "
+        f"y horarios. Siempre que el huesped pregunte por la fecha, hora o dia de hoy, "
+        f"usa los valores de arriba (no inventes ni uses valores hardcodeados).\n"
+    )
+
     # ── Construir mensajes en formato OpenAI ────────────────────────────────────
-    messages: list[dict] = [{"role": "system", "content": PROMPT_LLM_HUESPED}]
+    _system_prompt = f"{PROMPT_LLM_HUESPED}\n\n{_date_block}"
+    messages: list[dict] = [{"role": "system", "content": _system_prompt}]
     if history:
         messages.extend(history[-(CONTEXT_WINDOW_SIZE * 2):])  # últimos N turnos
     messages.append({"role": "user", "content": text})
@@ -481,8 +496,22 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
     """
     from prompts.admin_service.agents import PROMPT_LLM_ADMIN  # noqa
 
+    # ── Contexto de fecha/hora actual ───────────────────────────────────────────
+    from customer_service.mcp_servers.mcp_datetime import get_current_datetime, get_day_of_week  # noqa
+    _dt_info  = get_current_datetime(format="pretty")
+    _dt_date  = get_current_datetime(format="date")
+    _dt_day   = get_day_of_week()
+    _date_block = (
+        f"FECHA Y HORA ACTUAL (zona horaria Peru, UTC-5):\n"
+        f"  Ahora es: {_dt_info['result']}\n"
+        f"  Hoy es:   {_dt_day['result']}, {_dt_date['result']}\n"
+        f"Usa esta informacion para calcular vencimientos, cierres de dia y "
+        f"operaciones con fechas. Nunca inventes fechas ni uses valores hardcodeados.\n"
+    )
+
     # ── Construir mensajes en formato OpenAI ────────────────────────────────────
-    messages: list[dict] = [{"role": "system", "content": PROMPT_LLM_ADMIN}]
+    _system_prompt = f"{PROMPT_LLM_ADMIN}\n\n{_date_block}"
+    messages: list[dict] = [{"role": "system", "content": _system_prompt}]
     if history:
         messages.extend(history[-(CONTEXT_WINDOW_SIZE * 2):])  # últimos N turnos
     messages.append({"role": "user", "content": text})
