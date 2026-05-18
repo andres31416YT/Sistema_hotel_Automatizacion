@@ -20,12 +20,18 @@ from pydantic import BaseModel
 
 sys.stdout.reconfigure(line_buffering=True)
 
+logger = logging.getLogger("core")
+handler = logging.StreamHandler(sys.stderr)
+handler.setLevel(logging.DEBUG)
+handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+logger.setLevel(logging.DEBUG)
+logger.addHandler(handler)
+
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s %(levelname)s %(message)s",
     force=True,
 )
-logger = logging.getLogger(__name__)
 
 app = FastAPI(title="System Core — Hotel Automatizacion")
 
