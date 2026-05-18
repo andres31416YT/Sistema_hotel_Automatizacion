@@ -671,9 +671,6 @@ async def _worker_wa() -> None:
                     except Exception as e:
                         logger.warning(f"[HISTORY] No se pudo guardar turno: {e}")
 
-                except asyncio.CancelledError:
-                    logger.info("[WA WORKER] Cancelado — saliendo limpiamente")
-                    break
                 except Exception as e:
                     logger.error(f"[WA WORKER] Error procesando mensaje: {e}", exc_info=True)
                     await asyncio.sleep(1)
