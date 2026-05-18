@@ -8,4 +8,4 @@
 !.env.*.example
 !services/*/.env.example
 
-
+.kilo
