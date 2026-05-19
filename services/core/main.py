@@ -488,7 +488,7 @@ async def _build_reply(text: str, name: str, history: list[dict] | None = None) 
     )
 
 
-async def _build_reply_admin(text: str, name: str, history: list[dict] | None = None) -> str:
+async def _build_reply_admin(text: str, name: str, history: list[dict] | None = None, is_adm: bool = False) -> str:
     """
     Genera una respuesta para administradores usando Ollama via /v1/chat/completions.
     Prompt con contexto de admin: acceso completo, puede ver todo.
@@ -856,7 +856,7 @@ async def _worker_wa() -> None:
 
                         async def _do_build() -> str:
                             return (
-                                await _build_reply_admin(text, msg.get("name", "Admin"), _admin_history)
+                                await _build_reply_admin(text, msg.get("name", "Admin"), _admin_history, is_adm)
                                 if is_adm else
                                 await _build_reply(text, msg.get("name", "Usuario"), _admin_history)
                             )
