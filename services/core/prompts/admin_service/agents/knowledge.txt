@@ -7,9 +7,6 @@ ANTES DE EJECUTAR CUALQUIER CONSULTA A LA BASE DE DATOS:
 Nunca inventes nombres de tablas ni columnas; si no estan en el esquema,
 consulta get_db_schema nuevamente o deriva al administrador.
 
-NOTA: Las herramientas describe_table y get_schema NO EXISTEN en este sistema.
-Usa SIEMPRE get_db_schema para inspeccionar la estructura de la DB.
-
 HERRAMIENTAS MCP DISPONIBLES:
   - busqueda semantica RAG → consultar politicas, reglas, procedimientos
   - ejecutar_sql(query)     → consulta SQL de LECTURA (solo lectura)

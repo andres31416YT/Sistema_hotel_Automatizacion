@@ -644,6 +644,8 @@ def _ejecutar_consulta_admin(text: str) -> str | None:
     devuelve el resultado formateado.
     Devuelve None si la consulta no es reconocida (pasa a Ollama).
     """
+    import asyncio as _asyncio
+
     t = text.lower().strip()
     _logger.debug("[ADMIN-QUERY] Texto recibido: %r", t)
 
@@ -678,36 +680,34 @@ def _ejecutar_consulta_admin(text: str) -> str | None:
                                 "ORDER BY ci.created_at DESC LIMIT 50"),
     ]
 
+    async def _run_query(sql: str) -> dict:
+        dsn = "postgresql://{user}:{password}@{host}:{port}/{database}".format(**DB_HOTEL)
+        conn = await asyncpg.connect(dsn, timeout=15)
+        try:
+            rows = await conn.fetch(sql)
+            cols = list(rows[0].keys()) if rows else []
+            return {"columns": cols, "rows": [dict(r) for r in rows], "count": len(rows)}
+        except Exception as exc:
+            return {"error": str(exc)}
+        finally:
+            await conn.close()
+
     for keywords, sql in _MAP:
         if any(k in t for k in keywords):
             _logger.info("[ADMIN-QUERY] Consulta detectada: %r", keywords[0])
             try:
-        external_ref = f"WA_{phone}"
-        description = f"{RESERVATION_DESCRIPTION} — {name} ({phone})"
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: McpPayments().generate_payment_link(
-                amount=RESERVATION_AMOUNT,
-                reference=external_ref,
-                user_id=phone,
-            ),
-        )
-        link = result.get("link", "")
-        preference_id = result.get("preference_id", "")
-        if link:
-            logger.info(f"[PAYMENT] Link generado para {phone} — pref={preference_id}")
-            return (
-                f"Bienvenido/a al hotel, {name}! 😊\n\n"
-                f"Para confirmar tu reserva necesito completar el pago de S/{RESERVATION_AMOUNT:.2f}.\n\n"
-                f"Puedes pagar aqui:\n{link}\n\n"
-                f"Una vez realizado el pago, te confirmare tu reserva automaticamente."
-            )
-    except Exception as e:
-        logger.warning(f"[PAYMENT] No se pudo generar link para {phone}: {e}")
-    return None
+                loop = _asyncio.new_event_loop()
+                result = loop.run_until_complete(_run_query(sql))
+                loop.close()
+                if "error" in result:
+                    return f"[ERROR] {result['error']}"
+                return json.dumps(result, ensure_ascii=False, default=str)
+            except Exception as exc:
+                _logger.warning("[ADMIN-QUERY] Error SQL: %s", exc)
+                return f"[ERROR] {exc}"
 
-_logger.debug("[ADMIN-QUERY] No se detecto ninguna consulta conocida en: %r", t)
+    _logger.debug("[ADMIN-QUERY] No se detecto ninguna consulta conocida en: %r", t)
+    return None
 
 
 async def _worker_wa() -> None:
@@ -810,11 +810,11 @@ async def _worker_wa() -> None:
                             f"[PAYMENT] Intencion de pago detectada en {msg['phone']} "
                             f"(nuevo={is_new_user}) — intentando generar link"
                         )
-                        _payment_note = await _generate_payment_link(
-                            msg["phone"], msg.get("name", "Usuario"), text
-                        )
+                    _payment_note = await _generate_payment_link(
+                        msg["phone"], msg.get("name", "Usuario"), text
+                    )
 
-    try:
+                    try:
                         # Limitar el historial para admin: usar solo los ultimos 10 turnos (20 msgs)
                         # para evitar que Ollama 3B se cuelgue con contextos muy largos.
                         _admin_history   = history[-20:] if is_adm else history

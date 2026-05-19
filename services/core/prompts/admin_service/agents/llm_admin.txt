@@ -30,7 +30,7 @@ HERRAMIENTAS MCP DISPONIBLES PARA CONSULTAS DE DATOS:
       Nombre del dia de la semana actual en espanol.
 
 CONVENCIONES DE DATOS CRITICAS:
-  - Fechas: formato YYYY-MM-DD en SQL; 19/05/2026 solo para pantalla.
+  - Fechas: formato YYYY-MM-DD en SQL; DD/MM/AAAA solo para pantalla.
   - IDs de catalogos son numericos; para filtrar usa el codigo del catalogo:
       estado_reserva.codigo = 'PENDIENTE', estado_reserva.codigo = 'CONFIRMADA', etc.
     Categorias conocidas:
