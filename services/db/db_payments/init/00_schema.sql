@@ -2,20 +2,26 @@
 -- Tables: transacciones, payment_links, mp_notifications
 
 -- Transactions table (records of processed payments)
+-- Column mapping:
+--   status_detail  -> Campo opcional de detalle del estado del pago.
 CREATE TABLE IF NOT EXISTS transacciones (
-    id SERIAL PRIMARY KEY,
-    payment_id VARCHAR(100) UNIQUE NOT NULL,  -- Mercado Pago payment ID
-    amount DECIMAL(10,2) NOT NULL,
-    currency VARCHAR(10) DEFAULT 'USD',
-    status VARCHAR(20),  -- approved, pending, rejected, etc.
-    external_reference VARCHAR(200),  -- e.g., reservation ID
-    payer_email VARCHAR(255),
-    payer_name VARCHAR(255),
-    date_approved TIMESTAMP,
-    date_created TIMESTAMP,
-    date_last_updated TIMESTAMP,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    id                 SERIAL  PRIMARY KEY,
+    payment_id         VARCHAR(100) UNIQUE NOT NULL,  -- Mercado Pago payment ID
+    amount             DECIMAL(10,2)    NOT NULL,
+    currency           VARCHAR(10)  DEFAULT 'USD',
+    status             VARCHAR(20),                 -- approved, pending, rejected, etc.
+    status_detail      VARCHAR(50),                 -- detalle del estado (opcional)
+    status_code        VARCHAR(20),                 -- codigo de estado adicional
+    external_reference VARCHAR(200),                -- e.g., reservation ID
+    payer_id           VARCHAR(100),                -- ID del pagador en MP
+    payer_email        VARCHAR(255),
+    payer_name         VARCHAR(255),
+    transaction_amount DECIMAL(10,2),               -- monto procesado en MP
+    date_approved      TIMESTAMP,
+    date_created       TIMESTAMP,
+    date_last_updated  TIMESTAMP,
+    created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Payment links table (links generated for reservations)

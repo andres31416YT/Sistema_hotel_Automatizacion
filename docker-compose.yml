@@ -101,6 +101,9 @@ services:
       - ./services/db/db_hotel/.env
     ports:
       - "5432:5432"
+    volumes:
+      - db_hotel_data:/var/lib/postgresql/data
+      - ./services/db/db_hotel/init:/docker-entrypoint-initdb.d
 
   # Payments Transactional PostgreSQL DB
   db_payments:
@@ -111,6 +114,9 @@ services:
       - ./services/db/db_payments/.env
     ports:
       - "5433:5432"
+    volumes:
+      - db_payments_data:/var/lib/postgresql/data
+      - ./services/db/db_payments/init:/docker-entrypoint-initdb.d
 
   # RAG PostgreSQL DB with PGVector extension
   db_rag:
@@ -121,6 +127,9 @@ services:
       - ./services/db/db_rag/.env
     ports:
       - "5434:5434"
+    volumes:
+      - db_rag_data:/var/lib/postgresql/data
+      - ./services/db/db_rag/init:/docker-entrypoint-initdb.d
 
   # Redis cache for short-term memory
   redis:
@@ -134,3 +143,6 @@ services:
 
 volumes:
   ollama:
+  db_hotel_data:
+  db_payments_data:
+  db_rag_data:

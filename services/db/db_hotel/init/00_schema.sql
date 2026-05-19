@@ -6,9 +6,7 @@
 --   - Foreign keys con ON DELETE RESTRICT / SET NULL / CASCADE según caso.
 --   - Triggers automáticos de updated_at en todas las tablas mutables.
 --   - CHECK constraints en reservas (check_in < check_out).
---   - Índices en columnas de búsqueda frecuente.
 -- =============================================================================
-
 -- =============================================================================
 -- 1. CATÁLOGOS MAESTROS
 -- =============================================================================
@@ -24,14 +22,6 @@ CREATE TABLE IF NOT EXISTS tipo_documento (
     updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-INSERT INTO tipo_documento (codigo, nombre, descripcion)
-    VALUES
-        ('DNI',       'DNI / Registro Nacional de Identificación', 'Documento Nacional de Identificación'),
-        ('CE',        'Carnet de Extranjería',                   'Documento de identidad para extranjeros en Perú'),
-        ('PASSPORT',  'Pasaporte',                                'Pasaporte válido internacionalmente'),
-        ('DNI_EXT',   'OTRO',                                     'Otro documento de identidad válido')
-    ON CONFLICT (codigo) DO NOTHING;
-
 -- Tipos de habitación
 CREATE TABLE IF NOT EXISTS tipo_habitacion (
     id          SMALLSERIAL PRIMARY KEY,
@@ -44,15 +34,6 @@ CREATE TABLE IF NOT EXISTS tipo_habitacion (
     updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-INSERT INTO tipo_habitacion (codigo, nombre, descripcion, capacidad)
-    VALUES
-        ('SIMPLE',   'Simple',    'Habitación para 1 persona',             1),
-        ('DOBLE',    'Doble',     'Habitación para 2 personas',           2),
-        ('TWIN',     'Twin',      'Habitación con 2 camas individuales',   2),
-        ('SUITE',    'Suite',     'Suite con servicios adicionales',        4),
-        ('FAMILIAR', 'Familiar',  'Habitación para hasta 4 personas',      4)
-    ON CONFLICT (codigo) DO NOTHING;
-
 -- Estados de habitación
 CREATE TABLE IF NOT EXISTS estado_habitacion (
     id          SMALLSERIAL PRIMARY KEY,
@@ -63,14 +44,6 @@ CREATE TABLE IF NOT EXISTS estado_habitacion (
     activo      BOOLEAN DEFAULT TRUE,
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
-INSERT INTO estado_habitacion (codigo, nombre, descripcion, orden)
-    VALUES
-        ('DISPONIBLE',    'Disponible',    'Libre y lista para reservar',            5),
-        ('OCUPADA',       'Ocupada',       'Ocupada por un huésped actual',          3),
-        ('MANTENIMIENTO', 'Mantenimiento', 'En mantenimiento, no disponible',        1),
-        ('LIMPIEZA',      'Limpieza',      'Siendo limpiada, pendiente de liberar',  4)
-    ON CONFLICT (codigo) DO NOTHING;
 
 -- Estados de reserva
 CREATE TABLE IF NOT EXISTS estado_reserva (
@@ -83,16 +56,6 @@ CREATE TABLE IF NOT EXISTS estado_reserva (
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
-INSERT INTO estado_reserva (codigo, nombre, descripcion, orden)
-    VALUES
-        ('PENDIENTE',  'Pendiente',  'Reserva registrada, pendiente de confirmar pago',  1),
-        ('CONFIRMADA', 'Confirmada', 'Pago aprobado, reserva confirmada',                 2),
-        ('CHECK_IN',   'Check-in',   'Huésped ya ingresó al hotel',                       3),
-        ('CHECK_OUT',  'Check-out',  'Huésped egresó, habitación liberada',               4),
-        ('CANCELADA',  'Cancelada',  'Reserva anulada por cliente o staff',               0),
-        ('NO_SHOW',    'No Show',    'Huésped no se presentó en la fecha acordada',       0)
-    ON CONFLICT (codigo) DO NOTHING;
 
 -- =============================================================================
 -- 2. TABLA DE CLIENTES
@@ -125,8 +88,8 @@ CREATE TABLE IF NOT EXISTS rooms (
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT fk_rooms_tipo    FOREIGN KEY (id_tipo_hab)     REFERENCES tipo_habitacion(id)  ON DELETE RESTRICT,
-    CONSTRAINT fk_rooms_estado  FOREIGN KEY (id_estado_hab)   REFERENCES estado_habitacion(id) ON DELETE RESTRICT
+    CONSTRAINT fk_rooms_tipo   FOREIGN KEY (id_tipo_hab)   REFERENCES tipo_habitacion(id)  ON DELETE RESTRICT,
+    CONSTRAINT fk_rooms_estado FOREIGN KEY (id_estado_hab) REFERENCES estado_habitacion(id) ON DELETE RESTRICT
 );
 
 -- =============================================================================
@@ -144,10 +107,10 @@ CREATE TABLE IF NOT EXISTS reservations (
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT fk_reservas_cliente FOREIGN KEY (client_id)   REFERENCES clients(id) ON DELETE RESTRICT,
-    CONSTRAINT fk_reservas_room    FOREIGN KEY (room_id)     REFERENCES rooms(id)  ON DELETE RESTRICT,
-    CONSTRAINT fk_reservas_estado  FOREIGN KEY (id_estado)   REFERENCES estado_reserva(id) ON DELETE RESTRICT,
-    CONSTRAINT chk_fechas          CHECK (check_in_date < check_out_date)
+    CONSTRAINT fk_reservas_cliente FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_reservas_room    FOREIGN KEY (room_id)   REFERENCES rooms(id)  ON DELETE RESTRICT,
+    CONSTRAINT fk_reservas_estado  FOREIGN KEY (id_estado)  REFERENCES estado_reserva(id) ON DELETE RESTRICT,
+    CONSTRAINT chk_fechas         CHECK (check_in_date < check_out_date)
 );
 
 -- =============================================================================
@@ -155,11 +118,11 @@ CREATE TABLE IF NOT EXISTS reservations (
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS checkins (
-    id               SERIAL PRIMARY KEY,
-    reservation_id   INTEGER               NOT NULL,
+    id              SERIAL PRIMARY KEY,
+    reservation_id  INTEGER               NOT NULL,
     actual_check_in  TIMESTAMP,
     actual_check_out TIMESTAMP,
-    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT fk_checkins_reserva
         FOREIGN KEY (reservation_id)
@@ -178,41 +141,18 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS trg_clients_updated         ON clients;
-DROP TRIGGER IF EXISTS trg_rooms_updated            ON rooms;
-DROP TRIGGER IF EXISTS trg_reservations_updated     ON reservations;
-DROP TRIGGER IF EXISTS trg_tipo_documento_updated   ON tipo_documento;
-DROP TRIGGER IF EXISTS trg_tipo_habitacion_updated  ON tipo_habitacion;
-DROP TRIGGER IF EXISTS trg_estado_reserva_updated   ON estado_reserva;
+DROP TRIGGER IF EXISTS trg_clients_updated          ON clients;
+DROP TRIGGER IF EXISTS trg_rooms_updated             ON rooms;
+DROP TRIGGER IF EXISTS trg_reservations_updated      ON reservations;
+DROP TRIGGER IF EXISTS trg_tipo_documento_updated    ON tipo_documento;
+DROP TRIGGER IF EXISTS trg_tipo_habitacion_updated   ON tipo_habitacion;
+DROP TRIGGER IF EXISTS trg_estado_reserva_updated    ON estado_reserva;
 DROP TRIGGER IF EXISTS trg_estado_habitacion_updated ON estado_habitacion;
 
-CREATE TRIGGER trg_clients_updated          BEFORE UPDATE ON clients          FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
-CREATE TRIGGER trg_rooms_updated             BEFORE UPDATE ON rooms             FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
-CREATE TRIGGER trg_reservations_updated      BEFORE UPDATE ON reservations      FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
-CREATE TRIGGER trg_tipo_documento_updated    BEFORE UPDATE ON tipo_documento    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
-CREATE TRIGGER trg_tipo_habitacion_updated   BEFORE UPDATE ON tipo_habitacion   FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
-CREATE TRIGGER trg_estado_reserva_updated    BEFORE UPDATE ON estado_reserva    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
-CREATE TRIGGER trg_estado_habitacion_updated BEFORE UPDATE ON estado_habitacion  FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
-
--- =============================================================================
--- 7. ÍNDICES
--- =============================================================================
-
--- Clients
-CREATE INDEX IF NOT EXISTS idx_clients_whatsapp      ON clients(whatsapp_number);
-CREATE INDEX IF NOT EXISTS idx_clients_doc_identidad  ON clients(doc_identidad);
-CREATE INDEX IF NOT EXISTS idx_clients_tipo_documento ON clients(id_tipo_documento);
-
--- Rooms
-CREATE INDEX IF NOT EXISTS idx_rooms_tipo_hab   ON rooms(id_tipo_hab);
-CREATE INDEX IF NOT EXISTS idx_rooms_estado_hab ON rooms(id_estado_hab);
-
--- Reservations
-CREATE INDEX IF NOT EXISTS idx_reservations_client  ON reservations(client_id);
-CREATE INDEX IF NOT EXISTS idx_reservations_room    ON reservations(room_id);
-CREATE INDEX IF NOT EXISTS idx_reservations_estado  ON reservations(id_estado);
-CREATE INDEX IF NOT EXISTS idx_reservations_dates    ON reservations(check_in_date, check_out_date);
-CREATE INDEX IF NOT EXISTS idx_reservations_por_fecha ON reservations(check_in_date);
-
--- Checkins
-CREATE INDEX IF NOT EXISTS idx_checkins_reservation ON checkins(reservation_id);
+CREATE TRIGGER trg_clients_updated           BEFORE UPDATE ON clients            FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+CREATE TRIGGER trg_rooms_updated              BEFORE UPDATE ON rooms               FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+CREATE TRIGGER trg_reservations_updated       BEFORE UPDATE ON reservations        FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+CREATE TRIGGER trg_tipo_documento_updated     BEFORE UPDATE ON tipo_documento      FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+CREATE TRIGGER trg_tipo_habitacion_updated    BEFORE UPDATE ON tipo_habitacion     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+CREATE TRIGGER trg_estado_reserva_updated     BEFORE UPDATE ON estado_reserva      FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+CREATE TRIGGER trg_estado_habitacion_updated  BEFORE UPDATE ON estado_habitacion   FOR EACH ROW EXECUTE FUNCTION touch_updated_at();

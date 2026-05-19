@@ -106,7 +106,7 @@ async def _get_history(phone: str, redis_client: aioredis.Redis) -> list[dict]:
 
     # Fallback a Redis
     try:
-        raw = await redis_client.get(f"chat_history:{phone}")
+        raw = await asyncio.wait_for(redis_client.get(f"chat_history:{phone}"), timeout=5.0)
         if raw:
             data = json.loads(raw)
             # Recalentar buffer en memoria
@@ -493,8 +493,17 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
     Genera una respuesta para administradores usando Ollama via /v1/chat/completions.
     Prompt con contexto de admin: acceso completo, puede ver todo.
     Incluye historial de conversación para mantener el contexto.
+    Consultas de datos conocidas se ejecutan directamente sin Ollama.
     """
     from prompts.admin_service.agents import PROMPT_LLM_ADMIN  # noqa
+
+    # ── Consultas directas de datos (sin Ollama) ─────────────────────────────────
+    logger.info("[ADMIN] _build_reply_admin INICIO: text=%r", text[:80])
+    direct = _ejecutar_consulta_admin(text)
+    if direct is not None:
+        logger.info("[ADMIN] Consulta directa ejecutada (%d chars)", len(direct))
+        return direct
+    logger.info("[ADMIN] No es consulta directa, pasando a Ollama.")
 
     # ── Contexto de fecha/hora actual ───────────────────────────────────────────
     from customer_service.mcp_servers.mcp_datetime import get_current_datetime, get_day_of_week  # noqa
@@ -510,27 +519,89 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
     )
 
     # ── Construir mensajes en formato OpenAI ────────────────────────────────────
+    # Para el admin se usa SOLO el prompt de sistema + la consulta actual.
+    # El historial de admin se omite intencionalmente para que Ollama 3B no se cuelgue.
     _system_prompt = f"{PROMPT_LLM_ADMIN}\n\n{_date_block}"
     messages: list[dict] = [{"role": "system", "content": _system_prompt}]
-    if history:
-        messages.extend(history[-(CONTEXT_WINDOW_SIZE * 2):])  # últimos N turnos
+    if not is_adm and history:
+        messages.extend(history[-(CONTEXT_WINDOW_SIZE * 2):])  # clientes: historial completo
     messages.append({"role": "user", "content": text})
+    _logger.debug("[ADMIN] Mensajes enviados a Ollama: %d (is_adm=%s, hist_len=%d)",
+                  len(messages), is_adm, len(history))
+
+    _tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "execute_sql",
+                "description": (
+                    "Ejecuta una consulta SQL de LECTURA (SELECT/SHOW/WITH) sobre la base de datos "
+                    "del hotel. Usala cuando el administrador pida ver, listar o consultar datos "
+                    "(reservas, habitaciones, pagos, huespedes, transacciones). "
+                    "BLOQUEA INSERT/UPDATE/DELETE/DROP. "
+                    "Devuelve columnas + filas como lista de diccionarios."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Consulta SQL de lectura"},
+                        "params": {"type": "array", "items": {"type": "string"}, "description": "Parametros opcionales para la consulta"},
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+    ]
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
                 f"{OLLAMA_API_URL}/v1/chat/completions",
                 json={
-                    "model": OLLAMA_MODEL,
+                    "model":  OLLAMA_MODEL,
                     "messages": messages,
                     "stream": False,
+                    "tools":  _tools,
                 },
             )
         if resp.status_code == 200:
             data = resp.json()
             choices = data.get("choices", [])
             if choices:
-                reply = (choices[0].get("message", {}).get("content") or "").strip()
+                msg = choices[0].get("message", {})
+                tool_calls = msg.get("tool_calls")
+                if tool_calls:
+                    for tc in tool_calls:
+                        fn = tc.get("function", {})
+                        fn_name = fn.get("name", "")
+                        if fn_name == "execute_sql":
+                            try:
+                                args = json.loads(fn.get("arguments", "{}"))
+                                q = args.get("query", "")
+                                p = args.get("params")
+                                _logger.info("[LLM-ADMIN] Ejecutando SQL: %s", q[:120])
+                                result = execute_sql(q, p)
+                                if result.get("ok"):
+                                    rows = result.get("rows", [])
+                                    cols = result.get("columns", [])
+                                    cnt  = result.get("count", 0)
+                                    if cnt == 0:
+                                        return "La consulta se ejecuto correctamente pero no hay resultados para mostrar."
+                                    lines = [f"**{cnt} resultado(s) encontrado(s):**\n",
+                                             "| " + " | ".join(str(c) for c in cols) + " |",
+                                             "|" + "|".join("---" for _ in cols) + "|"]
+                                    for row in rows[:50]:
+                                        lines.append("| " + " | ".join(str(row.get(c,"")) for c in cols) + " |")
+                                    if cnt > 50:
+                                        lines.append(f"\n(Se muestran los primeros 50 de {cnt} registros. "
+                                                      "Pide 'ver todos' para ampliar.)")
+                                    return "\n".join(lines)
+                                else:
+                                    return f"Error en la consulta SQL: {result.get('error')}"
+                            except Exception as _exc:
+                                _logger.warning("[LLM-ADMIN] Error ejecutando SQL: %s", _exc)
+                                return f"Error ejecutando la consulta: {_exc}"
+                reply = (msg.get("content") or "").strip()
                 if reply:
                     return reply
     except Exception as e:
@@ -539,51 +610,78 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
     return f"Recibi tu consulta, {name}. Estoy procesando la solicitud administrativa."
 
 
-def _detect_intent(text: str) -> str:
+# ── Ejecucion directa de consultas para admin (sin Ollama) ─────────────────────
+# Reglas de consulta directa: palabras clave que gatillan ejecucion inmediata
+# de SQL sobre la DB de hotel, sin pasar por Ollama.
+
+_CONSULTA_RESERVAS = (
+    "ver todas las reservas", "mostrar todas las reservas", "listar todas las reservas",
+    "ver reservas", "mostrar reservas", "listar reservas",
+    "todas las reservas", "reservas activas",
+)
+_CONSULTA_HABITACIONES = (
+    "ver todas las habitaciones", "mostrar todas las habitaciones",
+    "listar todas las habitaciones", "ver habitaciones",
+    "habitaciones disponibles", "habitaciones libres",
+)
+_CONSULTA_CLIENTES = (
+    "ver todos los clientes", "mostrar clientes", "listar clientes",
+    "todos los huespedes", "ver huespedes",
+)
+_CONSULTA_PAGOS = (
+    "ver pagos", "ver transacciones", "transacciones de pago",
+    "pagos recibidos", "listar pagos",
+)
+_CONSULTA_CHECKINS = (
+    "ver checkins", "ver check-ins", "listar checkins",
+    "ver check-outs", "listar check-outs",
+)
+
+
+def _ejecutar_consulta_admin(text: str) -> str | None:
     """
-    Clasifica el texto del usuario en una intencion.
-    Se usa en AdminCheckRequest y otras rutas que no pasan por _build_reply_admin.
+    Si el texto del admin coincide con una consulta conocida, ejecuta SQL y
+    devuelve el resultado formateado.
+    Devuelve None si la consulta no es reconocida (pasa a Ollama).
     """
     t = text.lower().strip()
-    if any(w in t for w in ["fecha", "hoy", "dia", "semana"]):
-        return "consultar_fecha"
+    _logger.debug("[ADMIN-QUERY] Texto recibido: %r", t)
 
+    _MAP = [
+        (_CONSULTA_RESERVAS,   "SELECT r.id, r.check_in_date, r.check_out_date, r.total_amount, "
+                                "e.codigo AS estado, c.name AS cliente, ro.room_number "
+                                "FROM reservations r "
+                                "JOIN estado_reserva e ON r.id_estado = e.id "
+                                "LEFT JOIN clients c ON r.client_id = c.id "
+                                "LEFT JOIN rooms ro ON r.room_id = ro.id "
+                                "ORDER BY r.created_at DESC LIMIT 50"),
+        (_CONSULTA_HABITACIONES, "SELECT ro.room_number, th.nombre AS tipo, "
+                                  "eh.nombre AS estado, ro.created_at "
+                                  "FROM rooms ro "
+                                  "JOIN tipo_habitacion th ON ro.id_tipo_hab = th.id "
+                                  "JOIN estado_habitacion eh ON ro.id_estado_hab = eh.id "
+                                  "ORDER BY ro.room_number"),
+        (_CONSULTA_CLIENTES,    "SELECT c.id, c.name, c.doc_identidad, "
+                                "td.nombre AS tipo_doc, c.whatsapp_number, c.created_at "
+                                "FROM clients c "
+                                "LEFT JOIN tipo_documento td ON c.id_tipo_documento = td.id "
+                                "ORDER BY c.created_at DESC LIMIT 50"),
+        (_CONSULTA_PAGOS,       "SELECT t.id, t.payment_id, t.amount, t.status, "
+                                "t.payer_name, t.date_created "
+                                "FROM transacciones t "
+                                "ORDER BY t.created_at DESC LIMIT 50"),
+        (_CONSULTA_CHECKINS,    "SELECT ci.id, ci.reservation_id, ro.room_number, "
+                                "ci.actual_check_in, ci.actual_check_out, ci.created_at "
+                                "FROM checkins ci "
+                                "JOIN reservations r ON ci.reservation_id = r.id "
+                                "JOIN rooms ro ON r.room_id = ro.id "
+                                "ORDER BY ci.created_at DESC LIMIT 50"),
+    ]
 
-def _is_new_user_intent(text: str) -> bool:
-    """
-    Detecta si el mensaje refleja la intencion de un nuevo usuario que se registra.
-    Palabras clave: 'hola', 'buenas', 'nuevo', 'registrar', 'reservar', 'quiero reservar'.
-    """
-    t = text.lower().strip()
-    return (
-        any(w in t for w in ["hola", "buenas", "buenos dias", "buenas tardes", "buenas noches", "saludos"])
-        and len(t) < 300  # evita falsos positivos en mensajes largos
-    )
-
-
-def _detect_payment_intent(text: str) -> bool:
-    """
-    Detecta si el mensaje solicita un link de pago o confirmacion de reserva.
-    Se usa tanto para usuarios nuevos como existentes.
-    Palabras clave: 'pagar', 'pago', 'link', 'transferencia',
-    'como pago', 'pa pagar', 'para pagar', 'confirmar', 'reserva'.
-    """
-    t = text.lower().strip()
-    return any(w in t for w in [
-        "pagar", "pago", "link", "transferencia",
-        "como pago", "pa pagar", "para pagar",
-        "confirmar", "reserva", "como confirmo",
-        "ya pague", "ya pagué", "pague",
-        "quiero pagar", "necesito pagar",
-    ])
-
-
-async def _generate_payment_link(phone: str, name: str, text: str) -> str | None:
-    """
-    Genera un link de pago MercadoPago para un cliente nuevo que desea reservar.
-    Devuelve el texto del link listo para enviar, o None si falla.
-    """
-    try:
+    for keywords, sql in _MAP:
+        if any(k in t for k in keywords):
+            _logger.info("[ADMIN-QUERY] Consulta detectada: %r", keywords[0])
+            try:
         external_ref = f"WA_{phone}"
         description = f"{RESERVATION_DESCRIPTION} — {name} ({phone})"
         loop = asyncio.get_event_loop()
@@ -608,6 +706,8 @@ async def _generate_payment_link(phone: str, name: str, text: str) -> str | None
     except Exception as e:
         logger.warning(f"[PAYMENT] No se pudo generar link para {phone}: {e}")
     return None
+
+_logger.debug("[ADMIN-QUERY] No se detecto ninguna consulta conocida en: %r", t)
 
 
 async def _worker_wa() -> None:
@@ -652,6 +752,7 @@ async def _worker_wa() -> None:
 
                     # ── Regla 1: seguridad pasa siempre (admins no se bloquean) ───────────
                     is_adm = is_admin(msg["phone"])
+                    logger.info(f"[WA WORKER] is_adm={is_adm} para {msg['phone']}")
 
                     # ── Regla 2: validacion de seguridad (admins inmunes) ─────────────────
                     from customer_service.mcp_servers.mcp_security import McpSecurity
@@ -674,10 +775,28 @@ async def _worker_wa() -> None:
                     # ── Regla 3: recuperar historial y responder con LLM ──────────────────
                     history: list[dict] = []
                     try:
-                        history = await _get_history(msg["phone"], r)
-                        logger.debug(
-                            f"[HISTORY] Telefono={msg['phone']} — {len(history)} mensajes en contexto"
-                        )
+                        # Ahorrar latencia para admin: solo traer los ultimos turnos
+                        hist_key = f"chat_history:{msg['phone']}"
+                        if is_adm:
+                            try:
+                                raw_hist = await asyncio.wait_for(
+                                    r.lrange(hist_key, -20, -1), timeout=5.0
+                                )
+                                if raw_hist:
+                                    import json as _json
+                                    history = [_json.loads(m) for m in reversed(raw_hist) if m]
+                                logger.debug(
+                                    f"[HISTORY] Telefono={msg['phone']} (admin) — {len(history)} turnos recuperados"
+                                )
+                            except asyncio.TimeoutError:
+                                logger.warning(f"[HISTORY] Timeout lrange para {msg['phone']}, continuando sin historial")
+                        else:
+                            history = await asyncio.wait_for(
+                                _get_history(msg["phone"], r), timeout=5.0
+                            )
+                            logger.debug(
+                                f"[HISTORY] Telefono={msg['phone']} — {len(history)} mensajes en contexto"
+                            )
                     except Exception as e:
                         logger.warning(f"[HISTORY] No se pudo recuperar historial: {e}")
 
@@ -695,15 +814,34 @@ async def _worker_wa() -> None:
                             msg["phone"], msg.get("name", "Usuario"), text
                         )
 
-                    try:
-                        reply = (
-                            await _build_reply_admin(text, msg.get("name", "Admin"), history)
-                            if is_adm else
-                            await _build_reply(text, msg.get("name", "Usuario"), history)
-                        )
+    try:
+                        # Limitar el historial para admin: usar solo los ultimos 10 turnos (20 msgs)
+                        # para evitar que Ollama 3B se cuelgue con contextos muy largos.
+                        _admin_history   = history[-20:] if is_adm else history
+                        _admin_hist_size = len(_admin_history)
+                        logger.info("[WA WORKER] _build_reply_admin(is_adm=%s, hist=%d msgs, text=%r)",
+                                   is_adm, _admin_hist_size, text[:60])
+
+                        async def _do_build() -> str:
+                            return (
+                                await _build_reply_admin(text, msg.get("name", "Admin"), _admin_history)
+                                if is_adm else
+                                await _build_reply(text, msg.get("name", "Usuario"), _admin_history)
+                            )
+
+                        try:
+                            reply = await asyncio.wait_for(_do_build(), timeout=30.0)
+                        except asyncio.TimeoutError:
+                            logger.error("[WA WORKER] Timeout 30s procesando mensaje de %s: %r",
+                                       msg['phone'], text[:80])
+                            reply = ("La consulta tardo demasiado. "
+                                     "Intenta de nuevo mas tarde.")
                     except Exception as e:
                         logger.error(f"[WA WORKER] LLM fallo: {e}")
                         reply = "Gracias por tu mensaje. En este momento el asistente no esta disponible."
+
+                    # ── Log de respuesta antes de enviar ────────────────────────────────
+                    logger.info(f"[WA WORKER] Reply ({len(reply)} chars): {reply[:200]!r}")
 
                     # ── Adjuntar link de pago si se genero ────────────────────────────────
                     if _payment_note:
