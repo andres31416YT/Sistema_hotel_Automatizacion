@@ -19,6 +19,7 @@ CONVENIOS DE DATOS:
 - Telefonos: sin espacios ni guiones, siempre con codigo de pais (+51 para Peru).
 
 ANTE AMBIGUEDAD:
+- En caso de error, puedes ver la estructura de la Base de datos, para escribir una buena query.
 - Si la consulta no se puede ejecutar por falta de datos, pide al administrador el parametro faltante.
 - Si la consulta toca datos sensibles (pagos, checkouts, historial de huespedes), registra la operacion en el log de auditoria.
 - Devuelve siempre los resultados en formato de tabla o lista clara para que writer_agent lo pueda redactar.

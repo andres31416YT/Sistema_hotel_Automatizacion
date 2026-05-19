@@ -561,6 +561,23 @@ def _is_new_user_intent(text: str) -> bool:
     )
 
 
+def _detect_payment_intent(text: str) -> bool:
+    """
+    Detecta si el mensaje solicita un link de pago o confirmacion de reserva.
+    Se usa tanto para usuarios nuevos como existentes.
+    Palabras clave: 'pagar', 'pago', 'link', 'transferencia',
+    'como pago', 'pa pagar', 'para pagar', 'confirmar', 'reserva'.
+    """
+    t = text.lower().strip()
+    return any(w in t for w in [
+        "pagar", "pago", "link", "transferencia",
+        "como pago", "pa pagar", "para pagar",
+        "confirmar", "reserva", "como confirmo",
+        "ya pague", "ya pagué", "pague",
+        "quiero pagar", "necesito pagar",
+    ])
+
+
 async def _generate_payment_link(phone: str, name: str, text: str) -> str | None:
     """
     Genera un link de pago MercadoPago para un cliente nuevo que desea reservar.
@@ -664,12 +681,15 @@ async def _worker_wa() -> None:
                     except Exception as e:
                         logger.warning(f"[HISTORY] No se pudo recuperar historial: {e}")
 
-                    # ── Regla 4: si es un huesped nuevo y menciona reserva, generar link de pago ──
+                    # ── Regla 4: detectar intencion de pago y generar link de pago ────────────
+                    # Se aplica tanto a usuarios nuevos (primer saludo + reserva)
+                    # como a usuarios existentes que solicitan pagar o confirmar una reserva.
                     _payment_note: str | None = None
                     is_new_user = not history
-                    if is_new_user and not is_adm and _is_new_user_intent(text):
+                    if not is_adm and _detect_payment_intent(text):
                         logger.info(
-                            f"[PAYMENT] Nuevo usuario detectado {msg['phone']} — intentando generar link"
+                            f"[PAYMENT] Intencion de pago detectada en {msg['phone']} "
+                            f"(nuevo={is_new_user}) — intentando generar link"
                         )
                         _payment_note = await _generate_payment_link(
                             msg["phone"], msg.get("name", "Usuario"), text
