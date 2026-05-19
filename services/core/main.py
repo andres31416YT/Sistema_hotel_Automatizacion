@@ -526,7 +526,7 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
     if not is_adm and history:
         messages.extend(history[-(CONTEXT_WINDOW_SIZE * 2):])  # clientes: historial completo
     messages.append({"role": "user", "content": text})
-    _logger.debug("[ADMIN] Mensajes enviados a Ollama: %d (is_adm=%s, hist_len=%d)",
+    logger.debug("[ADMIN] Mensajes enviados a Ollama: %d (is_adm=%s, hist_len=%d)",
                   len(messages), is_adm, len(history))
 
     _tools = [
@@ -579,7 +579,7 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
                                 args = json.loads(fn.get("arguments", "{}"))
                                 q = args.get("query", "")
                                 p = args.get("params")
-                                _logger.info("[LLM-ADMIN] Ejecutando SQL: %s", q[:120])
+                                logger.info("[LLM-ADMIN] Ejecutando SQL: %s", q[:120])
                                 result = execute_sql(q, p)
                                 if result.get("ok"):
                                     rows = result.get("rows", [])
@@ -599,7 +599,7 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
                                 else:
                                     return f"Error en la consulta SQL: {result.get('error')}"
                             except Exception as _exc:
-                                _logger.warning("[LLM-ADMIN] Error ejecutando SQL: %s", _exc)
+                                logger.warning("[LLM-ADMIN] Error ejecutando SQL: %s", _exc)
                                 return f"Error ejecutando la consulta: {_exc}"
                 reply = (msg.get("content") or "").strip()
                 if reply:
@@ -647,7 +647,7 @@ def _ejecutar_consulta_admin(text: str) -> str | None:
     import asyncio as _asyncio
 
     t = text.lower().strip()
-    _logger.debug("[ADMIN-QUERY] Texto recibido: %r", t)
+    logger.debug("[ADMIN-QUERY] Texto recibido: %r", t)
 
     _MAP = [
         (_CONSULTA_RESERVAS,   "SELECT r.id, r.check_in_date, r.check_out_date, r.total_amount, "
@@ -694,7 +694,7 @@ def _ejecutar_consulta_admin(text: str) -> str | None:
 
     for keywords, sql in _MAP:
         if any(k in t for k in keywords):
-            _logger.info("[ADMIN-QUERY] Consulta detectada: %r", keywords[0])
+            logger.info("[ADMIN-QUERY] Consulta detectada: %r", keywords[0])
             try:
                 loop = _asyncio.new_event_loop()
                 result = loop.run_until_complete(_run_query(sql))
@@ -703,10 +703,10 @@ def _ejecutar_consulta_admin(text: str) -> str | None:
                     return f"[ERROR] {result['error']}"
                 return json.dumps(result, ensure_ascii=False, default=str)
             except Exception as exc:
-                _logger.warning("[ADMIN-QUERY] Error SQL: %s", exc)
+                logger.warning("[ADMIN-QUERY] Error SQL: %s", exc)
                 return f"[ERROR] {exc}"
 
-    _logger.debug("[ADMIN-QUERY] No se detecto ninguna consulta conocida en: %r", t)
+    logger.debug("[ADMIN-QUERY] No se detecto ninguna consulta conocida en: %r", t)
     return None
 
 
