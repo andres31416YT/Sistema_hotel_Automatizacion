@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS clients (
     id SERIAL PRIMARY KEY,
     whatsapp_number VARCHAR(20) UNIQUE NOT NULL,
     name VARCHAR(100),
-    identity_document VARCHAR(20),  -- DNI, carnet de extranjeria, pasaporte, etc.
+    doc_identidad VARCHAR(20),  -- DNI, carnet de extranjeria, pasaporte, etc.
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
