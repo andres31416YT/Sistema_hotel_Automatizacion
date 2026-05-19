@@ -497,13 +497,64 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
     """
     from prompts.admin_service.agents import PROMPT_LLM_ADMIN  # noqa
 
-    # ── Consultas directas de datos (sin Ollama) ─────────────────────────────────
+    async def _exec_sql(query: str) -> dict:
+        """Ejecuta SQL de lectura contra la DB del hotel."""
+        try:
+            dsn = "postgresql://{user}:{password}@{host}:{port}/{database}".format(**DB_HOTEL)
+            conn = await asyncpg.connect(dsn, timeout=15)
+            rows = await conn.fetch(query)
+            cols = list(rows[0].keys()) if rows else []
+            return {"ok": True, "columns": cols, "rows": [dict(r) for r in rows], "count": len(rows)}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        finally:
+            await conn.close()
+
+    # ── Respuesta directa por defecto: ejecutar schema o datos sin Ollama ─────
     logger.info("[ADMIN] _build_reply_admin INICIO: text=%r", text[:80])
+
+    # Paso 1: consultas directas conocidas (ver reservas, habitaciones, etc.)
     direct = _ejecutar_consulta_admin(text)
     if direct is not None:
         logger.info("[ADMIN] Consulta directa ejecutada (%d chars)", len(direct))
         return direct
-    logger.info("[ADMIN] No es consulta directa, pasando a Ollama.")
+
+    # Paso 2: si el admin pide estructura/ver tablas/schema, ejecutar
+    # consulta contra information_schema sin depender de Ollama
+    t = text.lower().strip()
+    if any(k in t for k in [
+        "estructura", "esquema", "schema", "tablas", "tabla",
+        "ver toda", "todas las", "todos los", "mostrar toda",
+        "base de datos", "columnas", "campos",
+    ]):
+        logger.info("[ADMIN] Consulta de estructura detectada — ejecutando info_schema")
+        try:
+            result = await _exec_sql(
+                "SELECT table_name, column_name, data_type, is_nullable "
+                "FROM information_schema.columns "
+                "WHERE table_schema = 'public' "
+                "ORDER BY table_name, ordinal_position"
+            )
+            if not result.get("ok"):
+                return f"[ERROR] {result.get('error')}"
+            rows = result["rows"]
+            from collections import defaultdict
+            tables = defaultdict(list)
+            for row in rows:
+                tables[row["table_name"]].append(f"{row['column_name']} ({row['data_type']})")
+            lines = [f"Base de datos — {len(tables)} tabla(s):\n"]
+            for table in sorted(tables):
+                cols = tables[table]
+                lines.append(f"  {table} ({len(cols)} columnas):")
+                for c in cols:
+                    lines.append(f"    - {c}")
+                lines.append("")
+            return "\n".join(lines)
+        except Exception as exc:
+            logger.warning("[ADMIN] Error info_schema: %s", exc)
+            return f"Error obteniendo esquema: {exc}"
+
+    logger.info("[ADMIN] No es consulta de estructura ni datos directos, pasando a Ollama.")
 
     # ── Contexto de fecha/hora actual ───────────────────────────────────────────
     from customer_service.mcp_servers.mcp_datetime import get_current_datetime, get_day_of_week  # noqa
