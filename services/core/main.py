@@ -710,6 +710,38 @@ def _ejecutar_consulta_admin(text: str) -> str | None:
     return None
 
 
+async def _generate_payment_link(phone: str, name: str, text: str) -> str | None:
+    """
+    Genera un link de pago MercadoPago para un cliente nuevo que desea reservar.
+    Devuelve el texto del link listo para enviar, o None si falla.
+    """
+    try:
+        external_ref = f"WA_{phone}"
+        description = f"{RESERVATION_DESCRIPTION} — {name} ({phone})"
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: McpPayments().generate_payment_link(
+                amount=RESERVATION_AMOUNT,
+                reference=external_ref,
+                user_id=phone,
+            ),
+        )
+        link = result.get("link", "")
+        preference_id = result.get("preference_id", "")
+        if link:
+            logger.info(f"[PAYMENT] Link generado para {phone} — pref={preference_id}")
+            return (
+                f"Bienvenido/a al hotel, {name}! 😊\n\n"
+                f"Para confirmar tu reserva necesito completar el pago de S/{RESERVATION_AMOUNT:.2f}.\n\n"
+                f"Puedes pagar aqui:\n{link}\n\n"
+                f"Una vez realizado el pago, te confirmare tu reserva automaticamente."
+            )
+    except Exception as e:
+        logger.warning(f"[PAYMENT] No se pudo generar link para {phone}: {e}")
+    return None
+
+
 async def _worker_wa() -> None:
     """Worker principal que consume la cola 'whatsapp_in' via BRPOP."""
     logger.info("[WA WORKER] Iniciado — escuchando cola whatsapp_in")
@@ -810,9 +842,9 @@ async def _worker_wa() -> None:
                             f"[PAYMENT] Intencion de pago detectada en {msg['phone']} "
                             f"(nuevo={is_new_user}) — intentando generar link"
                         )
-                    _payment_note = await _generate_payment_link(
-                        msg["phone"], msg.get("name", "Usuario"), text
-                    )
+                        _payment_note = await _generate_payment_link(
+                            msg["phone"], msg.get("name", "Usuario"), text
+                        )
 
                     try:
                         # Limitar el historial para admin: usar solo los ultimos 10 turnos (20 msgs)
