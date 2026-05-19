@@ -102,7 +102,11 @@ async def save_transaction(payment_data: dict):
     payment_method   = payment_data.get("payment_method_id")
     mp_preference_id = payment_data.get("preference_id")
     date_approved    = payment_data.get("date_approved")
-    fecha_registro   = datetime.now(timezone.utc)
+    # datetime sin zona horaria (offset-naive) para compatibilidad con asyncpg
+    # y con los timestamps que vienen de la API de Mercado Pago (que no incluye tz)
+    fecha_registro   = datetime.utcnow()
+    _dt_approved     = datetime.fromisoformat(date_approved.replace("Z", "+00:00")).replace(tzinfo=None) \
+                       if date_approved else None
 
     async with pool.acquire() as conn:
         await conn.execute(
@@ -120,7 +124,7 @@ async def save_transaction(payment_data: dict):
             """,
             payment_id, status, status_detail, amount, currency,
             external_ref, payer_email, payment_method,
-            mp_preference_id, date_approved, fecha_registro,
+            mp_preference_id, _dt_approved, fecha_registro,
         )
 
     logger.info(f"Transaccion guardada en DB Payments — payment_id: {payment_id} | status: {status}")
