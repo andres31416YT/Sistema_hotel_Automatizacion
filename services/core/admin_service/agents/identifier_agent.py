@@ -12,8 +12,6 @@ class AdminIdentifierAgent:
     def __init__(self, mcp_servers):
         """
         Initialize the Admin Identifier agent.
-        """
-        
         Args:
             mcp_servers: Dictionary of available MCP servers
         """
@@ -52,3 +50,7 @@ class AdminIdentifierAgent:
         }
         
         return context
+
+
+# Alias de compatibilidad
+IdentifierAgent = AdminIdentifierAgent

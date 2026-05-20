@@ -5,15 +5,17 @@ puede llamar para consultar la informacion de forma segura.
 """
 
 import re
-import os
 import json
+import os
 import logging
-
+from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Rutas al schema SQL
-_SCHEMA_DIR = os.path.join(os.path.dirname(__file__), '../../../db/db_hotel/init')
-_SCHEMA_FILE = os.path.join(_SCHEMA_DIR, '00_schema.sql')
+# Resueltas desde la raíz del paquete /core/ (parent[2] desde mcp_servers/mcp_database.py)
+_PKG_ROOT  = Path(__file__).resolve().parents[2]      # /core
+_SCHEMA_DIR  = _PKG_ROOT / 'db_hotel' / 'init'
+_SCHEMA_FILE = _SCHEMA_DIR / '00_schema.sql'
 
 
 def _load_schema_text() -> str:

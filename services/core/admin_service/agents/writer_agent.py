@@ -16,8 +16,7 @@ class WriterAgent:
     def __init__(self, mcp_servers):
         """
         Initialize the WriterAgent (Admin Service).
-        """
-        
+
         Args:
             mcp_servers: Dictionary of available MCP servers
         """

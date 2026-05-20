@@ -16,8 +16,7 @@ class GuardAgent:
     def __init__(self, mcp_servers):
         """
         Initialize the GuardAgent (Admin Service).
-        """
-        
+
         Args:
             mcp_servers: Dictionary of available MCP servers
         """

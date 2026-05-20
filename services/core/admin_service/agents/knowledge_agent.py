@@ -12,8 +12,7 @@ class KnowledgeAgent:
     def __init__(self, mcp_servers):
         """
         Initialize the KnowledgeAgent (Admin Service).
-        """
-        
+
         Args:
             mcp_servers: Dictionary of available MCP servers
         """

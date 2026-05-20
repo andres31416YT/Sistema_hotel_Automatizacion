@@ -12,8 +12,7 @@ class PaymentAgent:
     def __init__(self, mcp_servers):
         """
         Initialize the PaymentAgent (Admin Service).
-        """
-        
+
         Args:
             mcp_servers: Dictionary of available MCP servers
         """
