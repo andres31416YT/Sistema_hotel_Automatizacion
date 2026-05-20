@@ -179,9 +179,9 @@ class AdminNexusAgent:
             idx += 1
         if idx == 1:
             return "No pude leer la estructura de la tabla de clientes. Intentá de nuevo en un momento."
-        lines.append(f"\n  {idx}. Monto pagado (si cliente ya pagó)")
+        lines.append("\n")
+        lines.append(f"  {idx}. Monto pagado (si cliente ya pagó)")
         lines.append("     El monto se registra cuando se genere la reserva.")
-        lines.append(f"\n  {'Monto pagado' if idx+1==5 else 'Otro'}. Faltan datos?")
         return "\n".join(lines)
 
     def _handle_register_client(self, entities, sender_context):
