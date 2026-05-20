@@ -120,6 +120,10 @@ class McpRouter:
     def list_tools(self):
         return MCP_TOOLS
 
+    def get_db_schema(self) -> dict:
+        """Devuelve la estructura de la base de datos (delega a McpDatabase)."""
+        return self.database.get_db_schema()
+
     def route_message(self, message, sender_id, intent, entities):
         return {
             "message":   message,

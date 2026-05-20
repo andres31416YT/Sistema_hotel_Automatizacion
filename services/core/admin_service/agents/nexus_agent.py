@@ -59,6 +59,8 @@ class AdminNexusAgent:
         # Step 4: Route to appropriate handler based on intent
         if intent == "check_availability":
             return self._handle_availability_check(entities, sender_context)
+        elif intent == "registrar_cliente":
+            return self._handle_register_client(entities, sender_context)
         elif intent == "make_payment":
             return self._handle_payment_request(entities, sender_context)
         elif intent == "query_info":
@@ -80,7 +82,13 @@ class AdminNexusAgent:
         
         if any(word in message_lower for word in ["disponible", "disponibilidad", "habitación", "room"]):
             return "check_availability", self._extract_booking_entities(message)
-        elif any(word in message_lower for word in ["pago", "pagar", "pago", "link de pago"]):
+        elif any(word in message_lower for word in [
+            "registrar cliente", "nuevo cliente", "crear cliente",
+            "insertar cliente", "agregar cliente", "cliente nuevo",
+            "registrarlo", "ya me pago", "ya pagó",
+        ]):
+            return "registrar_cliente", {}
+        elif any(word in message_lower for word in ["pago", "pagar", "link de pago"]):
             return "make_payment", self._extract_payment_entities(message)
         elif any(word in message_lower for word in ["información", "info", "detalles", "horario"]):
             return "query_info", self._extract_info_entities(message)
@@ -149,7 +157,53 @@ class AdminNexusAgent:
         )
         
         return self.writer_agent.redact_message(info_result)
-    
+
+    # ── Mapeo de columnas DB → lenguaje simple ─────────────────────────────────
+    _CLIENT_FIELD_MAP = {
+        "whatsapp_number":   "Número de WhatsApp",
+        "name":              "Nombre completo",
+        "doc_identidad":     "Documento de identidad (DNI, CE o pasaporte)",
+        "id_tipo_documento": "Tipo de documento (elige: DNI, CE, PASSPORT, OTRO)",
+    }
+
+    def _build_client_fields_list(self, db_columns: list[str]) -> str:
+        """Construye la lista de campos en lenguaje simple a partir de las columnas de la DB."""
+        lines = ["Para registrar al cliente necesito los siguientes datos:\n"]
+        idx = 1
+        for col in db_columns:
+            label = self._CLIENT_FIELD_MAP.get(col)
+            if label is None:
+                continue  # ignora columnas internas: id, created_at, updated_at
+            lines.append(f"  {idx}. {label}")
+            idx += 1
+        if idx == 1:
+            return "No pude leer la estructura de la tabla de clientes. Intentá de nuevo en un momento."
+        lines.append(f"\n  {idx}. ¿Ya pagó? (sí / no)")
+        lines.append("     • Si sí: cuál es el monto pagado")
+        lines.append("     • Si no: se registra pendiente de pago")
+        return "\n".join(lines)
+
+    def _handle_register_client(self, entities, sender_context):
+        """Registrar un nuevo cliente: lee la estructura de la DB y lista los campos en lenguaje simple."""
+        mcp = self.mcp_servers.get('mcp_router') or self.mcp_servers.get('database')
+        if not mcp:
+            return "No pude acceder a la base de datos. Intentá de nuevo."
+
+        try:
+            # Obtener la estructura de la tabla clients sin mencionar herramientas
+            schema = mcp.get_db_schema()
+            clients_schema = schema.get("clients", {})
+            raw_columns = [c["name"] for c in clients_schema.get("columns", [])]
+        except Exception:
+            raw_columns = []
+
+        if not raw_columns:
+            return "No pude leer la estructura de la tabla de clientes. Intentá de nuevo en un momento."
+
+        return self.writer_agent.redact_message(
+            self._build_client_fields_list(raw_columns)
+        )
+
     def _handle_admin_request(self, entities, sender_context):
         """Handle admin requests (only for admins)."""
         # This would delegate to admin service agents
