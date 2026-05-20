@@ -10,7 +10,6 @@ COPY core_auth_settings.py .
 COPY now.py .
 COPY __init__.py .
 COPY herramientas/ herramientas/
-COPY db_hotel/ db_hotel/
 COPY prompts/ prompts/
 COPY admin_service/ admin_service/
 COPY customer_service/ customer_service/
