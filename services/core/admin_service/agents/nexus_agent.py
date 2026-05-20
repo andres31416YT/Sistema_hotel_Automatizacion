@@ -85,7 +85,8 @@ class AdminNexusAgent:
         elif any(word in message_lower for word in [
             "registrar cliente", "nuevo cliente", "crear cliente",
             "insertar cliente", "agregar cliente", "cliente nuevo",
-            "registrarlo", "ya me pago", "ya pagó",
+            "registrarlo", "ya me pago", "ya pagó", "llegó un cliente",
+            "llegar cliente", "ingresó un cliente", "cliente llegó",
         ]):
             return "registrar_cliente", {}
         elif any(word in message_lower for word in ["pago", "pagar", "link de pago"]):
