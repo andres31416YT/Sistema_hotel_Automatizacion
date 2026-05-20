@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 # ── MCP Servers ────────────────────────────────────────────────────────────────
 from customer_service.mcp_servers.mcp_payments import McpPayments  # noqa: E402
-from admin_service.mcp_servers.mcp_router import execute_sql  # noqa: E402
+from admin_service.mcp_servers.mcp_router import execute_sql, execute_dml  # noqa: E402
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -617,6 +617,26 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "execute_dml",
+                "description": (
+                    "EJECUTA operaciones de ESCRITURA (INSERT, UPDATE, DELETE) sobre la base de datos del hotel. "
+                    "BLOQUEA DDL (DROP/ALTER/CREATE/TRUNCATE/GRANT/REVOKE). "
+                    "Usa $1, $2, $3 ... para parametros en vez de valores directos en la consulta SQL. "
+                    "Devuelve mensaje de confirmacion con filas_afectadas o ultimo_id_insertado."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Consulta SQL de escritura (INSERT/UPDATE/DELETE)"},
+                        "params": {"type": "array", "items": {"type": "string"}, "description": "Lista de valores para los parametros $1, $2, etc."},
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
     ]
 
     try:
@@ -667,6 +687,19 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
                             except Exception as _exc:
                                 logger.warning("[LLM-ADMIN] Error ejecutando SQL: %s", _exc)
                                 return f"Error ejecutando la consulta: {_exc}"
+                        if fn_name == "execute_dml":
+                            try:
+                                args = json.loads(fn.get("arguments", "{}"))
+                                q = args.get("query", "")
+                                p = args.get("params")
+                                logger.info("[LLM-ADMIN] Ejecutando DML: %s", q[:120])
+                                result = await asyncio.to_thread(execute_dml, q, p)
+                                if result.get("success"):
+                                    return result.get("message", "Operacion ejecutada correctamente.")
+                                return f"Error ejecutando la operacion: {result.get('error')}"
+                            except Exception as _exc:
+                                logger.warning("[LLM-ADMIN] Error ejecutando DML: %s", _exc)
+                                return f"Error ejecutando la operacion: {_exc}"
                 reply = (msg.get("content") or "").strip()
                 if reply:
                     return reply

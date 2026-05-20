@@ -8,7 +8,7 @@ from herramientas.datetime_utils import get_current_datetime, get_day_of_week, H
 from customer_service.mcp_servers.mcp_database import McpDatabase  # noqa: E402  (reusa)
 
 
-import asyncpg, os, json, logging as _log
+import asyncpg, os, json, re, logging as _log
 
 _logger = _log.getLogger(__name__)
 
@@ -46,9 +46,9 @@ async def _ejecutar_sql(query: str, params: list | None = None) -> dict:
 
 def execute_sql(query: str, params: list | None = None) -> dict:
     """
-    Herramienta MCP para que el administrador ejecute consultas SQL de LECTURA
+    Herramienta MCP para que el administrador EJECUTE consultas SQL de LECTURA
     sobre la base de datos del hotel. Bloquea DML (INSERT/UPDATE/DELETE/DROP).
-    Uso: execute_sql(query="SELECT * FROM reservations LIMIT 50", params=None)
+    Uso: execute_sql(query="SELECT * FROM reservations ORDER BY created_at DESC LIMIT 50")
     Devuelve: {ok, columns, rows, count}
     """
     import re
@@ -69,69 +69,89 @@ def execute_sql(query: str, params: list | None = None) -> dict:
         loop.close()
 
 
-MCP_TOOLS = [
-    {
-        "name":        "execute_sql",
-        "servicio":    "database",
-        "description": (
-            "EJECUTA una consulta SQL de LECTURA (SELECT) sobre la base de datos del hotel. "
-            "Devuelve columnas + filas en formato JSON. "
-            "BLOQUEA INSERT/UPDATE/DELETE/DROP. "
-            "Ejemplo: execute_sql(query='SELECT * FROM reservations ORDER BY created_at DESC LIMIT 50')"
-        ),
-        "args": {"query": "SELECT ... (consulta SQL de lectura)", "params": "lista opcional de valores"},
-    },
-    {
-        "name":        "get_db_schema",
-        "servicio":    "mcp_database",
-        "description": (
-            "Devuelve la estructura COMPLETA de la base de datos del hotel "
-            "(tablas, columnas, tipos y relaciones). "
-            "USARLA SIEMPRE antes de armar cualquier consulta para confirmar nombres."
-        ),
-        "args": {},
-    },
-    {
-        "name":        "get_current_datetime",
-        "servicio":    "datetime",
-        "description": "Fecha y hora actual en Peru (UTC-5). USA CADA VEZ que se requiera calcular fechas.",
-        "args": {"format": "'iso', 'pretty', 'date', 'time', 'datetime'"},
-    },
-    {
-        "name":        "get_current_date",
-        "servicio":    "datetime",
-        "description": "Fecha actual en Peru (YYYY-MM-DD).",
-        "args": {},
-    },
-    {
-        "name":        "get_day_of_week",
-        "servicio":    "datetime",
-        "description": "Dia de la semana actual en espanol.",
-        "args": {},
-    },
-]
+def execute_dml(query: str, params: list | None = None) -> dict:
+    """
+    Herramienta MCP para que el administrador EJECUTE operaciones de ESCRITURA
+    (INSERT, UPDATE, DELETE) sobre la base de datos del hotel.
+    BLOQUEA DDL (DROP/ALTER/CREATE/TRUNCATE/GRANT/REVOKE).
+
+    Uso:
+      INSERT ejemplo:
+        execute_dml(
+          query="INSERT INTO clients (name, whatsapp_number, doc_identidad, id_tipo_documento)
+          VALUES ($1, $2, $3, $4)",
+          params=["Adriana Chavez", "51910841734", "74784023", 1]
+        )
+
+      UPDATE ejemplo:
+        execute_dml(
+          query="UPDATE rooms SET id_estado_hab=$1 WHERE id=$2",
+          params=[2, 5]
+        )
+
+      DELETE ejemplo:
+        execute_dml(
+          query="DELETE FROM clients WHERE id=$1",
+          params=[3]
+        )
+
+    Devuelve: {success, message, rows_affected, last_insert_id, error}
+    """
+    import re
+    q = (query or "").strip()
+    cmd = (q.split()[0].upper() if q.split() else "")
+
+    # Bloquear operaciones DDL
+    if cmd in ("DROP", "ALTER", "CREATE", "TRUNCATE", "GRANT", "REVOKE"):
+        return {"success": False, "error": f"Operación DDL '{cmd}' no permitida.", "rows_affected": 0}
+
+    # Solo permitir DML y lectura
+    if cmd not in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+        return {"success": False, "error": f"Solo se permiten SELECT/INSERT/UPDATE/DELETE. Recibido: '{cmd}'", "rows_affected": 0}
+
+    import asyncio as _asyncio
+    loop = _asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_ejecutar_dml(q, params, cmd))
+    finally:
+        loop.close()
 
 
-class McpRouter:
-    def __init__(self):
-        self.datetime  = HerramientasFecha()
-        self.database  = McpDatabase()
-
-    def list_tools(self):
-        return MCP_TOOLS
-
-    def get_db_schema(self) -> dict:
-        """Devuelve la estructura de la base de datos (delega a McpDatabase)."""
-        return self.database.get_db_schema()
-
-    def route_message(self, message, sender_id, intent, entities):
-        return {
-            "message":   message,
-            "sender_id": sender_id,
-            "intent":    intent,
-            "entities":  entities,
-            "routed_to": f"handler_for_{intent}",
-        }
-
-    def orchestrate_flow(self, flow_steps):
-        return [{"step": s, "status": "processed"} for s in flow_steps]
+async def _ejecutar_dml(query: str, params: list | None = None, cmd: str = "") -> dict:
+    """Ejecuta INSERT/UPDATE/DELETE y devuelve resultado."""
+    try:
+        conn = await asyncpg.connect(_DSN_HOTEL, timeout=15)
+        try:
+            if cmd == "INSERT":
+                # Agregar RETURNING * automaticamente para obtener el ID insertado
+                if "returning" not in query.lower():
+                    query = f"{query.rstrip(';')} RETURNING *"
+                row = await conn.fetchrow(query, *(params or []))
+                last_id = row[0] if row else None
+                return {
+                    "success": True,
+                    "message":  f"Registro insertado correctamente. ID: {last_id}",
+                    "rows_affected": 1,
+                    "last_insert_id": last_id,
+                    "error": None,
+                }
+            elif cmd:
+                # UPDATE o DELETE: contar filas afectadas
+                status = await conn.execute(query, *(params or []))
+                # status viene como "UPDATE 3" o "DELETE 2"
+                m = re.match(r'\w+\s+(\d+)', status or '')
+                affected = int(m.group(1)) if m else 0
+                return {
+                    "success": True,
+                    "message":  f"Operación {cmd.lower()} ejecutada. Filas afectadas: {affected}",
+                    "rows_affected": affected,
+                    "last_insert_id": None,
+                    "error": None,
+                }
+        except Exception as exc:
+            _logger.warning("[McpRouter:execute_dml] error: %s", exc)
+            return {"success": False, "error": str(exc), "rows_affected": 0, "last_insert_id": None}
+        finally:
+            await conn.close()
+    except Exception as exc:
+        return {"success": False, "error": f"No se pudo conectar a DB: {exc}", "rows_affected": 0, "last_insert_id": None}
