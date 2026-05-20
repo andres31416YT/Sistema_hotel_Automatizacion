@@ -163,8 +163,8 @@ class AdminNexusAgent:
     _CLIENT_FIELD_MAP = {
         "whatsapp_number":   "Número de WhatsApp",
         "name":              "Nombre completo",
-        "doc_identidad":     "Documento de identidad (DNI, CE o pasaporte)",
-        "id_tipo_documento": "Tipo de documento (elige: DNI, CE, PASSPORT, OTRO)",
+        "doc_identidad":     "Número de documento de identidad (DNI, carnet de extranjería o pasaporte)",
+        "id_tipo_documento": "Tipo de documento (elige uno: DNI, CE, PASSPORT, OTRO)",
     }
 
     def _build_client_fields_list(self, db_columns: list[str]) -> str:
@@ -179,9 +179,9 @@ class AdminNexusAgent:
             idx += 1
         if idx == 1:
             return "No pude leer la estructura de la tabla de clientes. Intentá de nuevo en un momento."
-        lines.append(f"\n  {idx}. ¿Ya pagó? (sí / no)")
-        lines.append("     • Si sí: cuál es el monto pagado")
-        lines.append("     • Si no: se registra pendiente de pago")
+        lines.append(f"\n  {idx}. Monto pagado (si cliente ya pagó)")
+        lines.append("     El monto se registra cuando se genere la reserva.")
+        lines.append(f"\n  {'Monto pagado' if idx+1==5 else 'Otro'}. Faltan datos?")
         return "\n".join(lines)
 
     def _handle_register_client(self, entities, sender_context):
