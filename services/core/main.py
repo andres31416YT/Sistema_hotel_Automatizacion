@@ -399,13 +399,19 @@ async def _send_wa_message(to: str, text: str) -> None:
         logger.error(f"[WA WORKER] Exception enviando a {to}: {e}")
 
 
+
 async def _build_reply(text: str, name: str, history: list[dict] | None = None) -> str:
     """
     Genera una respuesta usando Ollama (LLM local) via /v1/chat/completions.
-    Incluye el historial de conversación del usuario para mantener el contexto.
+    Incluye el historial de conversacion del usuario para mantener el contexto.
+    Incluye soporte de tool-calls: execute_sql, execute_dml, describe_table,
+    get_db_schema para que el LLM consulte la base de datos del hotel en tiempo real.
     Si Ollama no esta disponible, cae a reglas predefinidas.
     """
     from prompts.customer_service.agents import PROMPT_LLM_HUESPED  # noqa
+
+    # ── Importar herramientas de BD (import diferido evita circular) ────────────
+    from customer_service.mcp_servers.mcp_router import execute_sql, execute_dml  # noqa: E402
 
     # ── Contexto de fecha/hora actual ───────────────────────────────────────────
     from herramientas.datetime_utils import get_current_datetime, get_day_of_week  # noqa
@@ -413,36 +419,170 @@ async def _build_reply(text: str, name: str, history: list[dict] | None = None) 
     _dt_date  = get_current_datetime(format="date")
     _dt_day   = get_day_of_week()
     _date_block = (
-        f"FECHA Y HORA ACTUAL (zona horaria Peru, UTC-5):\n"
-        f"  Ahora es: {_dt_info['result']}\n"
-        f"  Hoy es:   {_dt_day['result']}, {_dt_date['result']}\n"
+        f"FECHA Y HORA ACTUAL (zona horaria Peru, UTC-5):"
+        f"  Ahora es: {_dt_info['result']}"
+        f"  Hoy es:   {_dt_day['result']}, {_dt_date['result']}"
         f"Usa esta informacion para calcular fechas, vencimientos, dias de la semana "
         f"y horarios. Siempre que el huesped pregunte por la fecha, hora o dia de hoy, "
         f"usa los valores de arriba (no inventes ni uses valores hardcodeados).\n"
     )
 
+    # ── Resumen del esquema (pequeno, para contexto del LLM) ────────────────────
+    from customer_service.mcp_servers.mcp_database import McpDatabase  # noqa: E402
+    try:
+        _schema_ctx = McpDatabase().get_schema_summary(fmt="text")
+        _schema_block = f"\nESQUEMA DE LA BASE DE DATOS DEL HOTEL:\n{_schema_ctx.get('result', '')}\n\nNOTE: Usa las herramientas execute_sql, execute_dml y describe_table para consultar la base de datos. Nunca inventes nombres de tablas o columnas."
+    except Exception:
+        _schema_block = ""
+
+    # ── Herramientas MCP disponibles para el LLM (cliente) ─────────────────────
+    _tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "execute_sql",
+                "description": (
+                    "Ejecuta una consulta SQL de LECTURA (SELECT/SHOW/WITH) sobre la base "
+                    "de datos del hotel. Usala cuando el huesped pida ver disponibilidad de "
+                    "habitaciones, consultar su reserva, ver tipos de habitacion, estados, "
+                    "o cualquier dato de la BD. "
+                    "BLOQUEA INSERT/UPDATE/DELETE/DROP. "
+                    "Devuelve columnas + filas como lista de diccionarios."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query":  {"type": "string", "description": "Consulta SQL de lectura"},
+                        "params": {"type": "array", "items": {"type": "string"}, "description": "Parametros posicionales (opcional)"},
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "execute_dml",
+                "description": (
+                    "EJECUTA operaciones de ESCRITURA (INSERT, UPDATE, DELETE) sobre la base "
+                    "de datos del hotel. BLOQUEA DDL (DROP/ALTER/CREATE/TRUNCATE). "
+                    "Usala para registrar un nuevo cliente (INSERT), actualizar una reserva "
+                    "(UPDATE) o marcar un check-in o check-out. "
+                    "Usa $1, $2, $3 ... para parametros."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query":  {"type": "string", "description": "Consulta SQL de escritura (INSERT/UPDATE/DELETE)"},
+                        "params": {"type": "array", "items": {"type": "string"}, "description": "Valores para parametros $1, $2, ... (opcional)"},
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "describe_table",
+                "description": (
+                    "Devuelve la estructura detallada de una tabla especifica de la BD: "
+                    "columnas, tipos de datos, comentarios y claves foraneas. "
+                    "Usala cuando necesites confirmar nombres exactos de columnas antes de "
+                    "armar una consulta SQL."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "table": {"type": "string", "description": "Nombre de la tabla (ej: clients, reservations, rooms)"},
+                    },
+                    "required": ["table"],
+                },
+            },
+        },
+    ]
+
     # ── Construir mensajes en formato OpenAI ────────────────────────────────────
-    _system_prompt = f"{PROMPT_LLM_HUESPED}\n\n{_date_block}"
+    _system_prompt = f"{PROMPT_LLM_HUESPED}\n\n{_date_block}\n\n{_schema_block}"
     messages: list[dict] = [{"role": "system", "content": _system_prompt}]
     if history:
-        messages.extend(history[-(CONTEXT_WINDOW_SIZE * 2):])  # últimos N turnos
+        messages.extend(history[-(CONTEXT_WINDOW_SIZE * 2):])
     messages.append({"role": "user", "content": text})
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
                 f"{OLLAMA_API_URL}/v1/chat/completions",
                 json={
-                    "model": OLLAMA_MODEL,
+                    "model":    OLLAMA_MODEL,
                     "messages": messages,
-                    "stream": False,
+                    "stream":   False,
+                    "tools":    _tools,
                 },
             )
         if resp.status_code == 200:
             data = resp.json()
             choices = data.get("choices", [])
             if choices:
-                reply = (choices[0].get("message", {}).get("content") or "").strip()
+                msg = choices[0].get("message", {})
+                tool_calls = msg.get("tool_calls")
+                if tool_calls:
+                    # ── Ejecutar cada tool call y acumular resultados ─────────────────
+                    tool_results: list[dict] = []
+                    for tc in (tool_calls if isinstance(tool_calls, list) else [tool_calls]):
+                        fn        = tc.get("function", {})
+                        fn_name   = fn.get("name", "")
+                        fn_args   = fn.get("arguments", "{}")
+                        try:
+                            args = json.loads(fn_args) if isinstance(fn_args, str) else fn_args
+                        except Exception:
+                            args = {}
+                        logger.info("[LLM-CUSTOMER] Tool call: %s args=%s", fn_name, args)
+
+                        try:
+                            if fn_name == "execute_sql":
+                                q = args.get("query", "")
+                                p = args.get("params")
+                                tool_result = execute_sql(q, p)
+                            elif fn_name == "execute_dml":
+                                q = args.get("query", "")
+                                p = args.get("params")
+                                tool_result = execute_dml(q, p)
+                            elif fn_name == "describe_table":
+                                from customer_service.mcp_servers.mcp_database import McpDatabase
+                                tool_result = McpDatabase().describe_table(args.get("table", ""))
+                            else:
+                                tool_result = {"error": f"Herramienta desconocida: {fn_name}"}
+                        except Exception as _exc:
+                            logger.warning("[LLM-CUSTOMER] Error en tool call %s: %s", fn_name, _exc)
+                            tool_result = {"error": str(_exc)}
+
+                        tool_results.append({
+                            "role":    "tool",
+                            "name":    fn_name,
+                            "content": json.dumps(tool_result, ensure_ascii=False, default=str),
+                        })
+
+                    # ── Enviar resultados de herramientas a Ollama para respuesta final ──
+                    messages.extend(tool_results)
+                    messages.append({"role": "user", "content": "Con la informacion de las herramientas anteriores, responde al huesped de forma clara y amable. No muestres SQL ni detalles tecnicos."})
+
+                    async with httpx.AsyncClient(timeout=120) as client2:
+                        resp2 = await client2.post(
+                            f"{OLLAMA_API_URL}/v1/chat/completions",
+                            json={
+                                "model":    OLLAMA_MODEL,
+                                "messages": messages,
+                                "stream":   False,
+                            },
+                        )
+                    if resp2.status_code == 200:
+                        data2   = resp2.json()
+                        reply   = (data2.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+                        if reply:
+                            return reply
+                    # Si la segunda llamada falla, continuamos al fallback
+
+                reply = (msg.get("content") or "").strip()
                 if reply:
                     return reply
         else:
@@ -452,7 +592,7 @@ async def _build_reply(text: str, name: str, history: list[dict] | None = None) 
 
     # ── Fallback a reglas predefinidas ───────────────────────────────────────────
     t = text.lower().strip()
-    if any(w in t for w in ["hola", "buenas", "buenos dias", "buenos dias", "buenos dias", "buenos dias"]):
+    if any(w in t for w in ["hola", "buenas", "buenos dias"]):
         return (
             f"Hola {name}! Bienvenido al hotel. "
             "Escribe 'disponibilidad', 'pago' o 'info' para continuar."

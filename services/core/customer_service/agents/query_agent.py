@@ -1,7 +1,6 @@
 """
 AI Agent QueryAgent — consultas a la base de datos del hotel.
-Lee la estructura de la DB desde McpDatabase.get_db_schema() sin tenerla
-hardcodeada en el prompt.
+Usa McpDatabase.execute_sql() para ejecutar consultas SQL de lectura.
 """
 
 from core.prompts.customer_service.agents import PROMPT_QUERY  # noqa
@@ -16,50 +15,64 @@ class QueryAgent:
     def __init__(self, mcp_servers):
         self.mcp_servers = mcp_servers
         self.database_server = mcp_servers.get('database')
-        # Cargar esquema al inicializar (una sola vez, desde el .sql)
         self._schema_summary = get_schema_short()
 
     def get_schema_context(self) -> str:
         """Devuelve el esquema de la DB listo para inyectar en un prompt."""
         return self._schema_summary
 
-    def check_availability(self, fecha, tipo_habitacion, huespedes, db_adapter=None):
+    def check_availability(self, fecha=None, tipo_habitacion=None, huespedes=1):
         """
-        Consulta habitaciones disponibles (sin hardcodear tablas).
-        Construye la consulta en base al esquema cargado desde 00_schema.sql.
-
+        Consulta habitaciones disponibles.
         Args:
-            fecha:         Fecha de check-in (YYYY-MM-DD).
-            tipo_habitacion: Código o nombre del tipo de habitación.
-            huespedes:     Número de huéspedes.
-            db_adapter:    Adaptador de DB con método .execute(sql, params).
-
+            fecha:           Fecha de check-in (YYYY-MM-DD) o None.
+            tipo_habitacion: Código del tipo (ej: 'DOBLE') o None para todos.
+            huespedes:       Número de huéspedes (int, default 1).
         Returns:
-            Lista de habitaciones disponibles o mensaje de error.
+            Dict {ok, columns, rows, count} o mensaje de error string.
         """
-        if not db_adapter:
-            return "Error: adaptador de base de datos no disponible. Contacta a recepción."
+        if not self.database_server:
+            return "Error: servidor de base de datos no disponible. Contacta a recepcion."
 
         try:
-            sql = (
-                "SELECT r.id, r.room_number, th.nombre, eh.nombre "
-                "FROM rooms r "
-                "JOIN tipo_habitacion th  ON r.id_tipo_hab   = th.id "
-                "JOIN estado_habitacion eh ON r.id_estado_hab = eh.id "
-                "WHERE th.codigo = $1 AND th.capacidad >= $2 "
-                "AND eh.codigo = 'DISPONIBLE'"
+            # Obtener id del estado DISPONIBLE
+            est = self.database_server.execute_sql(
+                "SELECT id FROM estado_habitacion WHERE codigo = 'DISPONIBLE' LIMIT 1"
             )
-            return db_adapter.execute(sql, [tipo_habitacion.upper(), int(huespedes)])
+            if not est.get("ok") or not est["rows"]:
+                return {"ok": False, "error": "No se encontro el estado DISPONIBLE."}
+            id_estado_disp = est["rows"][0]["id"]
+
+            sql = (
+                "SELECT r.id, r.room_number, th.nombre AS tipo_hab, "
+                "       th.capacidad, eh.nombre AS estado_hab "
+                "FROM rooms r "
+                "JOIN tipo_habitacion th ON r.id_tipo_hab = th.id "
+                "JOIN estado_habitacion eh ON r.id_estado_hab = eh.id "
+                "WHERE r.id_estado_hab = $1 AND th.capacidad >= $2"
+            )
+            params = [id_estado_disp, int(huespedes)]
+
+            if tipo_habitacion:
+                sql += " AND th.codigo = $3"
+                params.append(tipo_habitacion.upper())
+
+            sql += " ORDER BY r.room_number"
+            return self.database_server.execute_sql(sql, params)
+
         except Exception as exc:
             logger.warning("[QueryAgent] check_availability error: %s", exc)
             return "Error consultando disponibilidad. Intenta de nuevo en unos minutos."
 
-    def get_guest_info(self, guest_id, db_adapter=None):
+    def get_guest_info(self, guest_id):
         """
         Obtiene información del huésped por número de WhatsApp.
-        Consulta la estructura del esquema para armar la query correctamente.
+        Args:
+            guest_id: Número de WhatsApp del huésped.
+        Returns:
+            Dict con datos del huésped o None si no existe.
         """
-        if not db_adapter:
+        if not self.database_server:
             return None
 
         try:
@@ -70,14 +83,23 @@ class QueryAgent:
                 "LEFT JOIN tipo_documento td ON c.id_tipo_documento = td.id "
                 "WHERE c.whatsapp_number = $1"
             )
-            return db_adapter.execute(sql, [str(guest_id)])
+            result = self.database_server.execute_sql(sql, [str(guest_id)])
+            if result.get("ok") and result["rows"]:
+                return result["rows"][0]
+            return None
         except Exception as exc:
             logger.warning("[QueryAgent] get_guest_info error: %s", exc)
             return None
 
-    def get_active_reservation(self, client_wa, db_adapter=None):
-        """Devuelve la reserva activa (PENDIENTE o CONFIRMADA) del huésped."""
-        if not db_adapter:
+    def get_active_reservation(self, client_wa):
+        """
+        Devuelve la reserva activa (PENDIENTE o CONFIRMADA) del huésped.
+        Args:
+            client_wa: Número de WhatsApp del cliente.
+        Returns:
+            Dict con datos de la reserva o None si no existe.
+        """
+        if not self.database_server:
             return None
 
         try:
@@ -87,15 +109,18 @@ class QueryAgent:
                 "       r.room_number, th.nombre AS tipo_habitacion, "
                 "       cl.name, cl.doc_identidad "
                 "FROM reservations res "
-                "JOIN clients    cl ON res.client_id      = cl.id "
-                "JOIN rooms      r  ON res.room_id         = r.id "
+                "JOIN clients    cl ON res.client_id       = cl.id "
+                "JOIN rooms      r  ON res.room_id          = r.id "
                 "JOIN tipo_habitacion th ON r.id_tipo_hab  = th.id "
-                "JOIN estado_reserva er ON res.id_estado   = er.id "
+                "JOIN estado_reserva er ON res.id_estado    = er.id "
                 "WHERE cl.whatsapp_number = $1 "
                 "  AND er.codigo IN ('PENDIENTE', 'CONFIRMADA') "
                 "ORDER BY res.created_at DESC LIMIT 1"
             )
-            return db_adapter.execute(sql, [str(client_wa)])
+            result = self.database_server.execute_sql(sql, [str(client_wa)])
+            if result.get("ok") and result["rows"]:
+                return result["rows"][0]
+            return None
         except Exception as exc:
             logger.warning("[QueryAgent] get_active_reservation error: %s", exc)
             return None

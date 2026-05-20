@@ -59,6 +59,8 @@ class NexusAgent:
         # Step 4: Route to appropriate handler based on intent
         if intent == "check_availability":
             return self._handle_availability_check(entities, sender_context)
+        elif intent == "check_existing_reservation":
+            return self._check_existing_reservation(entities, sender_context)
         elif intent == "create_booking":
             return self._handle_create_booking(entities, sender_context)
         elif intent == "make_payment":
@@ -84,8 +86,16 @@ class NexusAgent:
             return "check_availability", self._extract_booking_entities(message)
         elif any(word in message_lower for word in [
             "registrar", "crear reserva", "nueva reserva", "quiero reservar",
-            "reservar", "hacer una reserva", "reserva",
+            "reservar", "hacer una reserva", "reserva", "cita", "agendar",
+            "agendada", "mi reserva", "ver mi reserva", "consultar reserva",
+            "ya reservé", "ya reserv", "reservé",
         ]):
+            # Si pregunta por el estado de una reserva existente
+            if any(word in message_lower for word in [
+                "mi reserva", "ver mi reserva", "consultar reserva", "ya reservé",
+                "agendada", "confirmada", "estado de mi reserva", "quedó agendad",
+            ]):
+                return "check_existing_reservation", self._extract_booking_entities(message)
             return "create_booking", self._extract_booking_entities(message)
         elif any(word in message_lower for word in ["pago", "pagar", "pago", "link de pago"]):
             return "make_payment", self._extract_payment_entities(message)
@@ -120,19 +130,35 @@ class NexusAgent:
     
     def _handle_availability_check(self, entities, sender_context):
         """Handle availability check requests."""
-        # Query the database for availability
-        availability_result = self.query_agent.check_availability(
-            entities.get("fecha"),
-            entities.get("tipo"),
-            entities.get("huespedes")
-        )
-        
-        # Format the response
-        return self.writer_agent.redact_message(
-            f"Disponibilidad para {entities.get('tipo')} el {entities.get('fecha')}: "
-            f"{availability_result}"
-        )
-    
+        db = self.mcp_servers.get('database')
+        if not db:
+            return "No pude acceder a la base de datos. Intentá de nuevo."
+
+        fecha = entities.get("fecha", "no especificada")
+        tipo  = entities.get("tipo",  "no especificado")
+        huespedes = entities.get("huespedes", "1")
+
+        try:
+            result = db.query_availability(
+                fecha if fecha != "fecha_no_especificada" else None,
+                tipo  if tipo  != "tipo_no_especificado" else None,
+                int(huespedes) if huespedes not in ("1", "fecha_no_especificada") else 1,
+            )
+            if result:
+                if isinstance(result, list) and len(result) > 0:
+                    lines = [f"✅ Hay {len(result)} habitación(es) disponible(s) para {tipo} el {fecha}:\n"]
+                    for r in result[:5]:
+                        lines.append(f"  • Habitación {r.get('room_number', 'N/A')} — {r.get('tipo', tipo)} — {r.get('estado', 'disponible')}")
+                    if len(result) > 5:
+                        lines.append(f"\n  ... y {len(result)-5} más.")
+                    lines.append("\n\n¿Quieres reservar una de estas habitaciones? Responde con el número de habitación o el tipo que prefieres.")
+                    return "\n".join(lines)
+                return f"Resultado de disponibilidad: {result}"
+            return f"Lo siento, no hay habitaciones {tipo} disponibles para el {fecha}. Podés probar con otra fecha u otro tipo de habitación."
+        except Exception as e:
+            logger.warning("[Nexus] check_availability error: %s", e)
+            return "Hubo un error al consultar la disponibilidad. Intentá de nuevo en unos minutos."
+
     def _handle_payment_request(self, entities, sender_context):
         """Handle payment requests."""
         # Generate payment link
@@ -156,6 +182,39 @@ class NexusAgent:
         )
         
         return self.writer_agent.redact_message(info_result)
+
+    def _check_existing_reservation(self, entities, sender_context):
+        """Verifica si el cliente ya tiene una reserva activa."""
+        db = self.mcp_servers.get('database')
+        if not db:
+            return "No pude acceder a la base de datos. Intentá de nuevo."
+
+        phone = sender_context.get("user_id")
+        if not phone:
+            return "Para buscar tu reserva necesito tu número de WhatsApp registrado."
+
+        try:
+            result = db.get_active_reservation(phone)
+            if result:
+                res = result[0] if isinstance(result, list) else result
+                estado = res.get("estado", "pendiente")
+                habitacion = res.get("room_number", "sin asignar")
+                checkin = res.get("check_in_date", "sin fecha")
+                checkout = res.get("check_out_date", "sin fecha")
+                monto = res.get("total_amount", "sin monto")
+                return (
+                    f"✅ Tu reserva está **{estado.upper()}**.\n\n"
+                    f"• Habitación: {habitacion}\n"
+                    f"• Check-in: {checkin}\n"
+                    f"• Check-out: {checkout}\n"
+                    f"• Total: S/ {monto}\n\n"
+                    f"Si necesitas modificar o cancelar, comunícate con recepción."
+                )
+            else:
+                return "No encontré ninguna reserva activa asociada a tu número de WhatsApp. ¿Deseas hacer una nueva reserva?"
+        except Exception as e:
+            logger.warning("Error consultando reserva: %s", e)
+            return "Hubo un error al consultar tu reserva. Intentá de nuevo o contactá a recepción."
 
     def _handle_create_booking(self, entities, sender_context):
         """Handle new booking/reservation requests — DNI first, then other fields."""
