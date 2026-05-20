@@ -3,7 +3,10 @@ AI Agent QueryAgent - Consults the database
 Uses McpDatabase to read and write data.
 """
 
+import logging
 from core.prompts.admin_service.agents import PROMPT_QUERY  # noqa
+
+logger = logging.getLogger(__name__)
 
 
 class QueryAgent:
@@ -12,8 +15,7 @@ class QueryAgent:
     def __init__(self, mcp_servers):
         """
         Initialize the QueryAgent (Admin Service).
-        """
-        
+
         Args:
             mcp_servers: Dictionary of available MCP servers
         """
