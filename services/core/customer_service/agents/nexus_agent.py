@@ -59,6 +59,8 @@ class NexusAgent:
         # Step 4: Route to appropriate handler based on intent
         if intent == "check_availability":
             return self._handle_availability_check(entities, sender_context)
+        elif intent == "create_booking":
+            return self._handle_create_booking(entities, sender_context)
         elif intent == "make_payment":
             return self._handle_payment_request(entities, sender_context)
         elif intent == "query_info":
@@ -80,6 +82,11 @@ class NexusAgent:
         
         if any(word in message_lower for word in ["disponible", "disponibilidad", "habitación", "room"]):
             return "check_availability", self._extract_booking_entities(message)
+        elif any(word in message_lower for word in [
+            "registrar", "crear reserva", "nueva reserva", "quiero reservar",
+            "reservar", "hacer una reserva", "reserva",
+        ]):
+            return "create_booking", self._extract_booking_entities(message)
         elif any(word in message_lower for word in ["pago", "pagar", "pago", "link de pago"]):
             return "make_payment", self._extract_payment_entities(message)
         elif any(word in message_lower for word in ["información", "info", "detalles", "horario"]):
@@ -149,7 +156,29 @@ class NexusAgent:
         )
         
         return self.writer_agent.redact_message(info_result)
-    
+
+    def _handle_create_booking(self, entities, sender_context):
+        """Handle new booking/reservation requests — DNI first, then other fields."""
+        # TODO: consultar get_db_schema para confirmar estructura de tabla reservations
+        # antes de construir INSERT. Por ahora, delegar al LLM con reglas estrictas.
+        # El DNI es el primer dato obligatorio antes de cualquier otro campo de reserva.
+        doc_identidad = entities.get("doc_identidad") or sender_context.get("doc_identidad")
+        if not doc_identidad:
+            return (
+                "Para registrar tu reserva, necesito primero tu documento de identidad "
+                "(DNI, carnet de extranjeria o pasaporte). "
+                "Una vez que lo compartas, te pedire las fechas y el tipo de habitacion."
+            )
+        return (
+            f"Perfecto, ya tengo tu documento de identidad registrado. "
+            f"Ahora necesito los siguientes datos para completar la reserva:\n\n"
+            f"1. Fecha de check-in (llegada)\n"
+            f"2. Fecha de check-out (salida)\n"
+            f"3. Tipo de habitacion (simple, doble o suite)\n"
+            f"4. Numero de huespedes\n\n"
+            f"Ejemplo: 'Check-in el 25 de mayo, check-out el 27 de mayo, habitacion doble, 2 personas'"
+        )
+
     def _handle_admin_request(self, entities, sender_context):
         """Handle admin requests (only for admins)."""
         # This would delegate to admin service agents

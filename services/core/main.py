@@ -465,6 +465,20 @@ async def _build_reply(text: str, name: str, history: list[dict] | None = None) 
             "3. Numero de huespedes\n\n"
             "Ejemplo: '25 de mayo, doble, 2 personas'"
         )
+    if any(w in t for w in [
+        "registrar", "crear reserva", "nueva reserva", "quiero reservar",
+        "reservar", "hacer una reserva", "quiero registrar",
+    ]):
+        return (
+            "Para registrar tu reserva, necesito primero tu documento de identidad "
+            "(DNI, carnet de extranjeria o pasaporte). "
+            "Es el primer dato obligatorio antes de cualquier otra informacion de la reserva.\n\n"
+            "Una vez que me lo compartas, te pedire:\n"
+            "1. Fecha de check-in (llegada)\n"
+            "2. Fecha de check-out (salida)\n"
+            "3. Tipo de habitacion (simple, doble o suite)\n"
+            "4. Numero de huespedes"
+        )
     if any(w in t for w in ["pago", "pagar", "link", "transferencia"]):
         return (
             "Para generar tu link de pago necesito:\n"
