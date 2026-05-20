@@ -809,6 +809,18 @@ def _ejecutar_consulta_admin(text: str) -> str | None:
     return None
 
 
+def _detect_payment_intent(text: str) -> bool:
+    """Devuelve True si el mensaje del usuario parece solicitar un pago o link de pago."""
+    t = (text or "").lower()
+    return any(k in t for k in [
+        "pago", "pagar", "link de pago", "pay", "payment",
+        "ya pague", "ya pagué", "pago realizado", "pago confirmado",
+        "quiero pagar", "necesito pagar", "cómo pago", "como pago",
+        "transferencia", "deposito", "depósito", "tarjeta",
+        "mercado pago", "yape", "plin",
+    ])
+
+
 async def _generate_payment_link(phone: str, name: str, text: str) -> str | None:
     """
     Genera un link de pago MercadoPago para un cliente nuevo que desea reservar.
