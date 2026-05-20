@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 COPY now.py .
 COPY core_auth_settings.py .
+COPY herramientas/ herramientas/
 COPY prompts/ prompts/
 COPY admin_service/ admin_service/
 COPY customer_service/ customer_service/

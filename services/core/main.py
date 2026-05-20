@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 # ── MCP Servers ────────────────────────────────────────────────────────────────
 from customer_service.mcp_servers.mcp_payments import McpPayments  # noqa: E402
+from admin_service.mcp_servers.mcp_router import execute_sql  # noqa: E402
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -407,7 +408,7 @@ async def _build_reply(text: str, name: str, history: list[dict] | None = None) 
     from prompts.customer_service.agents import PROMPT_LLM_HUESPED  # noqa
 
     # ── Contexto de fecha/hora actual ───────────────────────────────────────────
-    from customer_service.mcp_servers.mcp_datetime import get_current_datetime, get_day_of_week  # noqa
+    from herramientas.datetime_utils import get_current_datetime, get_day_of_week  # noqa
     _dt_info  = get_current_datetime(format="pretty")
     _dt_date  = get_current_datetime(format="date")
     _dt_day   = get_day_of_week()
@@ -514,7 +515,7 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
     logger.info("[ADMIN] _build_reply_admin INICIO: text=%r", text[:80])
 
     # Paso 1: consultas directas conocidas (ver reservas, habitaciones, etc.)
-    direct = _ejecutar_consulta_admin(text)
+    direct = await asyncio.to_thread(_ejecutar_consulta_admin, text)
     if direct is not None:
         logger.info("[ADMIN] Consulta directa ejecutada (%d chars)", len(direct))
         return direct
@@ -557,7 +558,7 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
     logger.info("[ADMIN] No es consulta de estructura ni datos directos, pasando a Ollama.")
 
     # ── Contexto de fecha/hora actual ───────────────────────────────────────────
-    from customer_service.mcp_servers.mcp_datetime import get_current_datetime, get_day_of_week  # noqa
+    from herramientas.datetime_utils import get_current_datetime, get_day_of_week  # noqa
     _dt_info  = get_current_datetime(format="pretty")
     _dt_date  = get_current_datetime(format="date")
     _dt_day   = get_day_of_week()
@@ -631,7 +632,7 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
                                 q = args.get("query", "")
                                 p = args.get("params")
                                 logger.info("[LLM-ADMIN] Ejecutando SQL: %s", q[:120])
-                                result = execute_sql(q, p)
+                                result = await asyncio.to_thread(execute_sql, q, p)
                                 if result.get("ok"):
                                     rows = result.get("rows", [])
                                     cols = result.get("columns", [])

@@ -4,7 +4,7 @@ Enruta mensajes entre agentes y orquesta el flujo en el lado admin.
 Expone herramientas MCP sin hardcodear estructura de DB.
 """
 
-from .mcp_datetime import McpDateTime  # noqa: E402
+from herramientas.datetime_utils import get_current_datetime, get_day_of_week, HerramientasFecha  # noqa: E402
 from customer_service.mcp_servers.mcp_database import McpDatabase  # noqa: E402  (reusa)
 
 
@@ -114,7 +114,7 @@ MCP_TOOLS = [
 
 class McpRouter:
     def __init__(self):
-        self.datetime  = McpDateTime()
+        self.datetime  = HerramientasFecha()
         self.database  = McpDatabase()
 
     def list_tools(self):
