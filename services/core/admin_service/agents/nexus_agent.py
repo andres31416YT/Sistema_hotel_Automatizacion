@@ -65,6 +65,8 @@ class AdminNexusAgent:
             return self._handle_payment_request(entities, sender_context)
         elif intent == "query_info":
             return self._handle_info_query(entities, sender_context)
+        elif intent == "consulta_reserva":
+            return self._handle_reserva_query(entities, sender_context)
         elif intent == "admin_request" and sender_context.get('is_admin'):
             return self._handle_admin_request(entities, sender_context)
         else:
@@ -80,6 +82,17 @@ class AdminNexusAgent:
         # Simplified intent detection
         message_lower = message.lower()
         
+        # Check for reservation queries (admin functionality)
+        if any(phrase in message_lower for phrase in [
+            "reservas para hoy", "reservas de hoy", "todas las reservas hoy",
+            "reservas para mañana", "reservas de mañana", "todas las reservas mañana",
+            "reservas para", "reservas del", "ver reservas", "mostrar reservas",
+            "listar reservas", "consultar reservas"
+        ]):
+            # Extract date information
+            entities = self._extract_date_entities(message)
+            return "consulta_reserva", entities
+            
         if any(word in message_lower for word in ["disponible", "disponibilidad", "habitación", "room"]):
             return "check_availability", self._extract_booking_entities(message)
         elif any(word in message_lower for word in [
@@ -118,6 +131,25 @@ class AdminNexusAgent:
         """Extract info-related entities from message."""
         return {
             "tema": "tema_no_especificado"
+        }
+
+    def _extract_date_entities(self, message):
+        """Extract date-related entities from message."""
+        import datetime
+        message_lower = message.lower()
+        today = datetime.date.today()
+        
+        # Default to today
+        fecha = today.strftime("%Y-%m-%d")
+        
+        if "mañana" in message_lower or "tomorrow" in message_lower:
+            fecha = (today + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        elif "hoy" in message_lower or "today" in message_lower:
+            fecha = today.strftime("%Y-%m-%d")
+        # Could add more date parsing logic here if needed
+        
+        return {
+            "fecha": fecha
         }
     
     def _handle_availability_check(self, entities, sender_context):
@@ -158,6 +190,67 @@ class AdminNexusAgent:
         )
         
         return self.writer_agent.redact_message(info_result)
+
+    def _handle_reserva_query(self, entities, sender_context):
+        """Handle reservation queries for specific dates."""
+        if not self.mcp_servers.get('mcp_router'):
+            return self.writer_agent.redact_message(
+                "Error: No se pudo acceder al router de la base de datos"
+            )
+        
+        try:
+            fecha = entities.get("fecha")
+            if not fecha:
+                return self.writer_agent.redact_message(
+                    "Error: No se pudo determinar la fecha para la consulta"
+                )
+            
+            # Query reservations for the specific date
+            query = """
+            SELECT r.id, c.name as cliente_nombre, c.doc_identidad as dni,
+                   r.check_in_date, r.check_out_date, r.total_amount,
+                   er.nombre as estado_reserva, t_h.nombre as tipo_habitacion,
+                   ro.room_number as numero_habitacion
+            FROM reservations r
+            JOIN clients c ON r.client_id = c.id
+            JOIN estado_reserva er ON r.id_estado = er.id
+            JOIN rooms ro ON r.room_id = ro.id
+            JOIN tipo_habitacion t_h ON ro.id_tipo_hab = t_h.id
+            WHERE r.check_in_date = $1
+            ORDER BY r.created_at DESC
+            """
+            
+            result = self.mcp_servers['mcp_router'].execute_sql(query, [fecha])
+            
+            if not result.get('ok'):
+                return self.writer_agent.redact_message(
+                    f"Error al consultar reservas: {result.get('error', 'Error desconocido')}"
+                )
+            
+            rows = result.get('rows', [])
+            if not rows:
+                return self.writer_agent.redact_message(
+                    f"No se encontraron reservas para la fecha {fecha}"
+                )
+            
+            # Format the response
+            response_lines = [f"Reservas para el {fecha}:"]
+            for i, row in enumerate(rows, 1):
+                response_lines.append(
+                    f"{i}. Reserva #{row['id']} - {row['cliente_nombre']} "
+                    f"(DNI: {row['dni']}) - Habitación {row['numero_habitacion']} "
+                    f"({row['tipo_habitacion']}) - {row['estado_reserva']} "
+                    f"- Check-in: {row['check_in_date']} - Check-out: {row['check_out_date']} "
+                    f"- Total: S/{row['total_amount']:.2f}"
+                )
+            
+            return self.writer_agent.redact_message("\n".join(response_lines))
+            
+        except Exception as e:
+            logger.error(f"Error in _handle_reserva_query: {e}")
+            return self.writer_agent.redact_message(
+                "Error interno al procesar la consulta de reservas. Inténtelo de nuevo."
+            )
 
     # ── Mapeo de columnas DB → lenguaje simple ─────────────────────────────────
     _CLIENT_FIELD_MAP = {

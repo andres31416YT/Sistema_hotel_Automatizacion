@@ -857,6 +857,15 @@ _CONSULTA_RESERVAS = (
     "ver todas las reservas", "mostrar todas las reservas", "listar todas las reservas",
     "ver reservas", "mostrar reservas", "listar reservas",
     "todas las reservas", "reservas activas",
+    "reservas para hoy", "reservas para mañana", "dame todas las reservas para hoy",
+    "dame todas las reservas para mañana", "reservas de hoy", "reservas de mañana",
+    "ver reservas para hoy", "ver reservas para mañana", "mostrar reservas para hoy",
+    "mostrar reservas para mañana"
+)
+_CONSULTA_RESERVAS_FECHA = (
+    "reservas para", "reservas del", "ver reservas para", "ver reservas del",
+    "mostrar reservas para", "mostrar reservas del", "listar reservas para",
+    "listar reservas del"
 )
 _CONSULTA_HABITACIONES = (
     "ver todas las habitaciones", "mostrar todas las habitaciones",
@@ -888,20 +897,86 @@ def _ejecutar_consulta_admin(text: str) -> str | None:
     t = text.lower().strip()
     logger.debug("[ADMIN-QUERY] Texto recibido: %r", t)
 
+    # Handle date-specific reservation queries first
+    if any(phrase in t for phrase in ["reservas para", "reservas del", "ver reservas para", "ver reservas del",
+                                      "mostrar reservas para", "mostrar reservas del", "listar reservas para",
+                                      "listar reservas del"]):
+        # Extract date from the query
+        fecha = None
+        if "hoy" in t:
+            fecha = get_current_datetime(format="date")["result"]
+        elif "mañana" in t:
+            # Calculate tomorrow's date
+            from datetime import datetime, timedelta
+            today = datetime.now()
+            tomorrow = today + timedelta(days=1)
+            fecha = tomorrow.strftime("%Y-%m-%d")
+        else:
+            # Try to extract date in format like "25 de mayo" or similar
+            # For now, we'll fall back to the general reservation query if no specific date is found
+            pass
+        
+        if fecha:
+            # Query reservations for specific date
+            try:
+                loop = _asyncio.new_event_loop()
+                dsn = "postgresql://{user}:{password}@{host}:{port}/{database}".format(**DB_HOTEL)
+                conn = loop.run_until_complete(asyncpg.connect(dsn, timeout=15))
+                try:
+                    rows = loop.run_until_complete(conn.fetch("""
+                        SELECT r.id, r.check_in_date, r.check_out_date, r.total_amount,
+                               e.codigo AS estado, c.name AS cliente, ro.room_number
+                        FROM reservations r
+                        JOIN estado_reserva e ON r.id_estado = e.id
+                        LEFT JOIN clients c ON r.client_id = c.id
+                        LEFT JOIN rooms ro ON r.room_id = ro.id
+                        WHERE r.check_in_date = $1
+                        ORDER BY r.created_at DESC
+                    """, fecha))
+                    cols = list(rows[0].keys()) if rows else []
+                    result_data = {"columns": cols, "rows": [dict(r) for r in rows], "count": len(rows)}
+                    loop.run_until_complete(conn.close())
+                    loop.close()
+                    
+                    if "error" in result_data:
+                        return f"[ERROR] {result_data['error']}"
+                    
+                    # Format the response for date-specific query
+                    if result_data["count"] == 0:
+                        return f"No se encontraron reservas para la fecha {fecha}"
+                    
+                    lines = [f"**{result_data['count']} reserva(s) encontrada(s) para el {fecha}:**\n"]
+                    lines.append("| " + " | ".join(str(c) for c in result_data["columns"]) + " |")
+                    lines.append("|" + "|".join("---" for _ in result_data["columns"]) + "|")
+                    for row in result_data["rows"][:50]:  # Limit to 50 rows
+                        lines.append("| " + " | ".join(str(row.get(c,"")) for c in result_data["columns"]) + " |")
+                    if result_data["count"] > 50:
+                        lines.append(f"\n(Se muestran los primeros 50 de {result_data['count']} registros. "
+                                   "Pide 'ver todos' para ampliar.)")
+                    return "\n".join(lines)
+                except Exception as exc:
+                    loop.run_until_complete(conn.close())
+                    loop.close()
+                    logger.warning("[ADMIN-QUERY] Error SQL: %s", exc)
+                    return f"[ERROR] {exc}"
+            except Exception as exc:
+                logger.warning("[ADMIN-QUERY] Error connecting to DB: %s", exc)
+                return f"[ERROR] No se pudo conectar a la base de datos: {exc}"
+    
     _MAP = [
         (_CONSULTA_RESERVAS,   "SELECT r.id, r.check_in_date, r.check_out_date, r.total_amount, "
-                                "e.codigo AS estado, c.name AS cliente, ro.room_number "
-                                "FROM reservations r "
-                                "JOIN estado_reserva e ON r.id_estado = e.id "
-                                "LEFT JOIN clients c ON r.client_id = c.id "
-                                "LEFT JOIN rooms ro ON r.room_id = ro.id "
-                                "ORDER BY r.created_at DESC LIMIT 50"),
+                                 "e.codigo AS estado, c.name AS cliente, ro.room_number "
+                                 "FROM reservations r "
+                                 "JOIN estado_reserva e ON r.id_estado = e.id "
+                                 "LEFT JOIN clients c ON r.client_id = c.id "
+                                 "LEFT JOIN rooms ro ON r.room_id = ro.id "
+                                 "ORDER BY r.created_at DESC LIMIT 50"),
         (_CONSULTA_HABITACIONES, "SELECT ro.room_number, th.nombre AS tipo, "
-                                  "eh.nombre AS estado, ro.created_at "
-                                  "FROM rooms ro "
-                                  "JOIN tipo_habitacion th ON ro.id_tipo_hab = th.id "
-                                  "JOIN estado_habitacion eh ON ro.id_estado_hab = eh.id "
-                                  "ORDER BY ro.room_number"),
+                                   "eh.nombre AS estado, ro.created_at "
+                                   "FROM rooms ro "
+                                   "JOIN tipo_habitacion th ON ro.id_tipo_hab = th.id "
+                                   "JOIN estado_habitacion eh ON ro.id_estado_hab = eh.id "
+                                   "ORDER BY ro.room_number"),
         (_CONSULTA_CLIENTES,    "SELECT c.id, c.name, c.doc_identidad, "
                                 "td.nombre AS tipo_doc, c.whatsapp_number, c.created_at "
                                 "FROM clients c "
@@ -918,18 +993,6 @@ def _ejecutar_consulta_admin(text: str) -> str | None:
                                 "JOIN rooms ro ON r.room_id = ro.id "
                                 "ORDER BY ci.created_at DESC LIMIT 50"),
     ]
-
-    async def _run_query(sql: str) -> dict:
-        dsn = "postgresql://{user}:{password}@{host}:{port}/{database}".format(**DB_HOTEL)
-        conn = await asyncpg.connect(dsn, timeout=15)
-        try:
-            rows = await conn.fetch(sql)
-            cols = list(rows[0].keys()) if rows else []
-            return {"columns": cols, "rows": [dict(r) for r in rows], "count": len(rows)}
-        except Exception as exc:
-            return {"error": str(exc)}
-        finally:
-            await conn.close()
 
     for keywords, sql in _MAP:
         if any(k in t for k in keywords):
@@ -1172,6 +1235,11 @@ class LLMTestRequest(BaseModel):
     name: str = "Usuario"
 
 
+class LLMAdminTestRequest(BaseModel):
+    message: str
+    name: str = "Admin"
+
+
 @app.post("/", response_model=dict)
 async def test_llm(body: LLMTestRequest):
     """Prueba el LLM: envia un mensaje y devuelve la respuesta generada."""
@@ -1192,6 +1260,26 @@ async def test_llm(body: LLMTestRequest):
         except Exception:
             fb_history = []
         reply = await _build_reply(body.message, body.name, fb_history)
+    return {"reply": reply}
+
+
+@app.post("/admin/llm", response_model=dict)
+async def test_llm_admin(body: LLMAdminTestRequest):
+    """Prueba el LLM admin: envia un mensaje como admin y devuelve la respuesta generada."""
+    try:
+        r_test = aioredis.Redis(host=REDIS_HOST, port=REDIS_PORT,
+                                password=REDIS_PASSWORD, decode_responses=True)
+        history = await _get_history(f"admin_test:{body.name}", r_test)
+        # is_adm=True forza modo admin completo
+        reply = await _build_reply_admin(body.message, body.name, history, is_adm=True)
+        await _save_turn(f"admin_test:{body.name}", body.message, reply, r_test)
+        await r_test.close()
+    except Exception:
+        r_fb = aioredis.Redis(host=REDIS_HOST, port=REDIS_PORT,
+                              password=REDIS_PASSWORD, decode_responses=True)
+        fb_history = await _get_history(f"admin_test:{body.name}", r_fb)
+        await r_fb.close()
+        reply = await _build_reply_admin(body.message, body.name, fb_history, is_adm=True)
     return {"reply": reply}
 
 
