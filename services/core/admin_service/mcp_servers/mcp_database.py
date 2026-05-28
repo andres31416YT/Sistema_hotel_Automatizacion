@@ -1,90 +1,19 @@
 """
-MCP Server McpDatabase
-Lee y escribe en DB Transaccional PostgreSQL Hotel
+MCP Server McpDatabase - Admin Service
+Reexporta las herramientas de base de datos del customer_service para uso administrativo.
 """
 
-class McpDatabase:
-    def __init__(self):
-        pass
-    
-    def get_or_create_user_profile(self, sender_id, contact_info):
-        """
-        Get or create a user profile in the database
-        
-        Args:
-            sender_id: The WhatsApp number of the user
-            contact_info: Contact information from WhatsApp
-            
-        Returns:
-            Dictionary with user profile information
-        """
-        # In a real implementation, this would query/insert into PostgreSQL
-        return {
-            "user_id": sender_id,
-            "is_admin": sender_id.endswith("00"),  # Example: numbers ending in 00 are admins
-            "name": contact_info.get("name", "Usuario"),
-            "created_at": "2026-01-01T00:00:00Z",
-            "updated_at": "2026-01-01T00:00:00Z"
-        }
-    
-    def query_availability(self, fecha, tipo_habitacion, huespedes):
-        """
-        Check room availability in the hotel database
-        
-        Args:
-            fecha: Date for check-in (YYYY-MM-DD format)
-            tipo_habitacion: Type of room (e.g., "simple", "doble", "suite")
-            huespedes: Number of guests
-            
-        Returns:
-            Availability information
-        """
-        # In a real implementation, this would query the PostgreSQL database
-        # For now, return a simplified response
-        return f"Disponible: 2 habitaciones de tipo {tipo_habitacion} para {huespedes} personas el {fecha}"
-    
-    def get_guest_profile(self, guest_id):
-        """
-        Get profile information for a guest
-        
-        Args:
-            guest_id: Identifier of the guest
-            
-        Returns:
-            Dictionary with guest profile information
-        """
-        # In a real implementation, this would query the PostgreSQL database
-        return {
-            "guest_id": guest_id,
-            "name": f"Invitado {guest_id[-4:]}" if len(guest_id) >= 4 else "Invitado",
-            "reservations": [],
-            "total_stays": 0,
-            "total_spent": 0.0
-        }
-    
-    def create_reservation(self, reservation_data):
-        """
-        Create a new reservation in the database
-        
-        Args:
-            reservation_data: Dictionary with reservation details
-            
-        Returns:
-            Reservation ID or confirmation
-        """
-        # In a real implementation, this would insert into PostgreSQL
-        return f"res_{reservation_data.get('client_id', 'unknown')}_{int(__import__('time').time())}"
-    
-    def update_reservation_status(self, reservation_id, status):
-        """
-        Update the status of a reservation
-        
-        Args:
-            reservation_id: Identifier of the reservation
-            status: New status (confirmed, checked_in, checked_out, cancelled)
-            
-        Returns:
-            Boolean indicating success
-        """
-        # In a real implementation, this would update the PostgreSQL database
-        return True
+import sys
+import os
+
+# Importar desde customer_service para reutilizar la lógica real
+customer_mcp_path = os.path.join(os.path.dirname(__file__), "..", "..", "customer_service", "mcp_servers")
+sys.path.insert(0, customer_mcp_path)
+
+from mcp_database import McpDatabase as _McpDatabaseBase
+from mcp_database import get_db_schema, get_schema_short
+
+# Reexportar la clase principal
+McpDatabase = _McpDatabaseBase
+get_db_schema = get_db_schema
+get_schema_summary = get_schema_short

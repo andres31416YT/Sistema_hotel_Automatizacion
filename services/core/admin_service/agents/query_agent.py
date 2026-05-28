@@ -57,4 +57,16 @@ class QueryAgent:
         if not self.database_server:
             return None
             
-        return self.database_server.get_guest_profile(guest_id)
+        try:
+            # Usar execute_sql para obtener información del cliente
+            result = self.database_server.execute_sql(
+                "SELECT id, name, whatsapp_number, doc_identidad, created_at "
+                "FROM clients WHERE whatsapp_number = $1 OR id::text = $1",
+                [str(guest_id)]
+            )
+            if result.get("ok") and result.get("rows"):
+                return result["rows"][0]
+            return None
+        except Exception as e:
+            logger.warning(f"[QueryAgent] get_guest_info error: {e}")
+            return None

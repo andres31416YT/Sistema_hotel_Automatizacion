@@ -57,15 +57,26 @@ async def get_redis() -> aioredis.Redis:
 async def get_db() -> asyncpg.Pool:
     global db_pool
     if db_pool is None:
-        db_pool = await asyncpg.create_pool(
-            host=DB_HOST,
-            port=DB_PORT,
-            database=DB_NAME,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            min_size=2,
-            max_size=10,
-        )
+        max_retries = 10
+        for attempt in range(max_retries):
+            try:
+                db_pool = await asyncpg.create_pool(
+                    host=DB_HOST,
+                    port=DB_PORT,
+                    database=DB_NAME,
+                    user=DB_USER,
+                    password=DB_PASSWORD,
+                    min_size=2,
+                    max_size=10,
+                )
+                logger.info(f"DB connection established after {attempt+1} attempt(s)")
+                return db_pool
+            except Exception as e:
+                logger.warning(f"DB connection attempt {attempt+1}/{max_retries} failed: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                else:
+                    raise
     return db_pool
 
 
@@ -102,8 +113,6 @@ async def save_transaction(payment_data: dict):
     payment_method   = payment_data.get("payment_method_id")
     mp_preference_id = payment_data.get("preference_id")
     date_approved    = payment_data.get("date_approved")
-    # datetime sin zona horaria (offset-naive) para compatibilidad con asyncpg
-    # y con los timestamps que vienen de la API de Mercado Pago (que no incluye tz)
     fecha_registro   = datetime.utcnow()
     _dt_approved     = datetime.fromisoformat(date_approved.replace("Z", "+00:00")).replace(tzinfo=None) \
                        if date_approved else None
@@ -324,7 +333,6 @@ async def generate_payment_link(request: GenerateLinkRequest):
         "Content-Type": "application/json",
     }
 
-    # URL de notificacion para MercadoPago
     notification_url_env = os.getenv(
         "MERCADO_PAGO_NOTIFICATION_URL",
         os.getenv("WEBHOOK_PUBLIC_URL", ""),

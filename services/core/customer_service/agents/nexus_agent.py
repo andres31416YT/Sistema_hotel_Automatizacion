@@ -108,7 +108,6 @@ class NexusAgent:
     
     def _extract_booking_entities(self, message):
         """Extract booking-related entities from message."""
-        # Simplified entity extraction
         return {
             "fecha": "fecha_no_especificada",
             "tipo": "tipo_no_especificado",
@@ -135,30 +134,29 @@ class NexusAgent:
             return "No pude acceder a la base de datos. Intentá de nuevo."
 
         fecha = entities.get("fecha", "no especificada")
-        tipo  = entities.get("tipo",  "no especificado")
+        tipo = entities.get("tipo", "no especificado")
         huespedes = entities.get("huespedes", "1")
 
         try:
             result = db.query_availability(
                 fecha if fecha != "fecha_no_especificada" else None,
-                tipo  if tipo  != "tipo_no_especificado" else None,
+                tipo if tipo != "tipo_no_especificado" else None,
                 int(huespedes) if huespedes not in ("1", "fecha_no_especificada") else 1,
             )
-            if result:
-                if isinstance(result, list) and len(result) > 0:
-                    lines = [f"✅ Hay {len(result)} habitación(es) disponible(s) para {tipo} el {fecha}:\n"]
-                    for r in result[:5]:
-                        lines.append(f"  • Habitación {r.get('room_number', 'N/A')} — {r.get('tipo', tipo)} — {r.get('estado', 'disponible')}")
-                    if len(result) > 5:
-                        lines.append(f"\n  ... y {len(result)-5} más.")
-                    lines.append("\n\n¿Quieres reservar una de estas habitaciones? Responde con el número de habitación o el tipo que prefieres.")
-                    return "\n".join(lines)
-                return f"Resultado de disponibilidad: {result}"
+            if result.get("ok") and result.get("rows"):
+                rows = result["rows"]
+                lines = [f"✅ Hay {len(rows)} habitación(es) disponible(s):\n"]
+                for r in rows[:5]:
+                    lines.append(f"  • Habitación {r.get('room_number', 'N/A')} — {r.get('tipo_hab', tipo)} — {r.get('estado_hab', 'disponible')}")
+                if len(rows) > 5:
+                    lines.append(f"\n  ... y {len(rows)-5} más.")
+                lines.append("\n\n¿Quieres reservar una de estas habitaciones? Responde con el número de habitación o el tipo que prefieres.")
+                return "\n".join(lines)
             return f"Lo siento, no hay habitaciones {tipo} disponibles para el {fecha}. Podés probar con otra fecha u otro tipo de habitación."
         except Exception as e:
             logger.warning("[Nexus] check_availability error: %s", e)
             return "Hubo un error al consultar la disponibilidad. Intentá de nuevo en unos minutos."
-
+    
     def _handle_payment_request(self, entities, sender_context):
         """Handle payment requests."""
         # Generate payment link
@@ -195,32 +193,30 @@ class NexusAgent:
 
         try:
             result = db.get_active_reservation(phone)
-            if result:
-                res = result[0] if isinstance(result, list) else result
-                estado = res.get("estado", "pendiente")
-                habitacion = res.get("room_number", "sin asignar")
-                checkin = res.get("check_in_date", "sin fecha")
-                checkout = res.get("check_out_date", "sin fecha")
-                monto = res.get("total_amount", "sin monto")
-                return (
-                    f"✅ Tu reserva está **{estado.upper()}**.\n\n"
-                    f"• Habitación: {habitacion}\n"
-                    f"• Check-in: {checkin}\n"
-                    f"• Check-out: {checkout}\n"
-                    f"• Total: S/ {monto}\n\n"
-                    f"Si necesitas modificar o cancelar, comunícate con recepción."
-                )
-            else:
-                return "No encontré ninguna reserva activa asociada a tu número de WhatsApp. ¿Deseas hacer una nueva reserva?"
+            if result and result.get("ok") and result.get("rows"):
+                rows = result["rows"]
+                if rows:
+                    res = rows[0]
+                    estado = res.get("estado", "pendiente")
+                    habitacion = res.get("room_number", "sin asignar")
+                    checkin = res.get("check_in_date", "sin fecha")
+                    checkout = res.get("check_out_date", "sin fecha")
+                    monto = res.get("total_amount", "sin monto")
+                    return (
+                        f"✅ Tu reserva está **{estado.upper()}**.\n\n"
+                        f"• Habitación: {habitacion}\n"
+                        f"• Check-in: {checkin}\n"
+                        f"• Check-out: {checkout}\n"
+                        f"• Total: S/ {monto}\n\n"
+                        f"Si necesitas modificar o cancelar, comunícate con recepción."
+                    )
+            return "No encontré ninguna reserva activa asociada a tu número de WhatsApp. ¿Deseas hacer una nueva reserva?"
         except Exception as e:
             logger.warning("Error consultando reserva: %s", e)
             return "Hubo un error al consultar tu reserva. Intentá de nuevo o contactá a recepción."
 
     def _handle_create_booking(self, entities, sender_context):
         """Handle new booking/reservation requests — DNI first, then other fields."""
-        # TODO: consultar get_db_schema para confirmar estructura de tabla reservations
-        # antes de construir INSERT. Por ahora, delegar al LLM con reglas estrictas.
-        # El DNI es el primer dato obligatorio antes de cualquier otro campo de reserva.
         doc_identidad = entities.get("doc_identidad") or sender_context.get("doc_identidad")
         if not doc_identidad:
             return (
@@ -240,7 +236,6 @@ class NexusAgent:
 
     def _handle_admin_request(self, entities, sender_context):
         """Handle admin requests (only for admins)."""
-        # This would delegate to admin service agents
         return self.writer_agent.redact_message(
             "Solicitud administrativa procesada. (Implementación del servicio admin pendiente)"
         )

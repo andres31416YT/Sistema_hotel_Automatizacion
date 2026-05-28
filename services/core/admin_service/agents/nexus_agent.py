@@ -113,7 +113,6 @@ class AdminNexusAgent:
     
     def _extract_booking_entities(self, message):
         """Extract booking-related entities from message."""
-        # Simplified entity extraction
         return {
             "fecha": "fecha_no_especificada",
             "tipo": "tipo_no_especificado",
@@ -146,7 +145,6 @@ class AdminNexusAgent:
             fecha = (today + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         elif "hoy" in message_lower or "today" in message_lower:
             fecha = today.strftime("%Y-%m-%d")
-        # Could add more date parsing logic here if needed
         
         return {
             "fecha": fecha
@@ -193,9 +191,10 @@ class AdminNexusAgent:
 
     def _handle_reserva_query(self, entities, sender_context):
         """Handle reservation queries for specific dates."""
-        if not self.mcp_servers.get('mcp_router'):
+        db = self.mcp_servers.get('database')
+        if not db:
             return self.writer_agent.redact_message(
-                "Error: No se pudo acceder al router de la base de datos"
+                "Error: No se pudo acceder a la base de datos"
             )
         
         try:
@@ -220,7 +219,7 @@ class AdminNexusAgent:
             ORDER BY r.created_at DESC
             """
             
-            result = self.mcp_servers['mcp_router'].execute_sql(query, [fecha])
+            result = db.execute_sql(query, [fecha])
             
             if not result.get('ok'):
                 return self.writer_agent.redact_message(
@@ -252,7 +251,6 @@ class AdminNexusAgent:
                 "Error interno al procesar la consulta de reservas. Inténtelo de nuevo."
             )
 
-    # ── Mapeo de columnas DB → lenguaje simple ─────────────────────────────────
     _CLIENT_FIELD_MAP = {
         "whatsapp_number":   "Número de WhatsApp",
         "name":              "Nombre completo",
@@ -267,7 +265,7 @@ class AdminNexusAgent:
         for col in db_columns:
             label = self._CLIENT_FIELD_MAP.get(col)
             if label is None:
-                continue  # ignora columnas internas: id, created_at, updated_at
+                continue
             lines.append(f"  {idx}. {label}")
             idx += 1
         if idx == 1:
@@ -279,13 +277,12 @@ class AdminNexusAgent:
 
     def _handle_register_client(self, entities, sender_context):
         """Registrar un nuevo cliente: lee la estructura de la DB y lista los campos en lenguaje simple."""
-        mcp = self.mcp_servers.get('mcp_router') or self.mcp_servers.get('database')
-        if not mcp:
+        db = self.mcp_servers.get('database')
+        if not db:
             return "No pude acceder a la base de datos. Intentá de nuevo."
-
+        
         try:
-            # Obtener la estructura de la tabla clients sin mencionar herramientas
-            schema = mcp.get_db_schema()
+            schema = db.get_db_schema()
             clients_schema = schema.get("clients", {})
             raw_columns = [c["name"] for c in clients_schema.get("columns", [])]
         except Exception:
@@ -300,7 +297,6 @@ class AdminNexusAgent:
 
     def _handle_admin_request(self, entities, sender_context):
         """Handle admin requests (only for admins)."""
-        # This would delegate to admin service agents
         return self.writer_agent.redact_message(
             "Solicitud administrativa procesada. (Implementación del servicio admin pendiente)"
         )
