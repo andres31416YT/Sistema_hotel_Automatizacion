@@ -8,6 +8,9 @@ HERRAMIENTAS DISPONIBLES:
   Ejemplo: execute_dml(query="INSERT INTO clients (name, whatsapp_number, doc_identidad, id_tipo_documento) VALUES ($1, $2, $3, $4)", params=["Adriana Chavez", "51910841734", "74784023", 1])
 - get_db_schema() — Devuelve la estructura de todas las tablas y columnas de la DB.
   Ejemplo: get_db_schema()
+- generate_payment_link(amount, reference, user_id) — Genera enlace de pago MercadoPago.
+  Ejemplo: generate_payment_link(amount=1.0, reference="WA_51977972106", user_id="51977972106")
+  NOTA: Usar $150.0 como monto default para reservas.
 
 REGLAS:
 1. Cuando el admin pida VER, CONSULTAR o LISTAR datos (reservas, habitaciones, clientes, pagos, tabla de cualquier tipo), usá get_db_schema() primero y luego execute_sql() para traer los datos REALES.

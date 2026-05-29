@@ -643,7 +643,7 @@ async def _build_reply(text: str, name: str, history: list[dict] | None = None) 
     )
 
 
-async def _build_reply_admin(text: str, name: str, history: list[dict] | None = None, is_adm: bool = False) -> str:
+async def _build_reply_admin(text: str, name: str, history: list[dict] | None = None, is_adm: bool = False, phone: str = "") -> str:
     """
     Genera una respuesta para administradores usando Ollama via /v1/chat/completions.
     Prompt con contexto de admin: acceso completo, puede ver todo.
@@ -777,6 +777,26 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "generate_payment_link",
+                "description": (
+                    "Genera un link de pago MercadoPago. "
+                    "Usa amount=150.0 como monto default para reservas. "
+                    "Devuelve dict con 'link' (URL de pago) y 'preference_id'."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "amount": {"type": "number", "description": "Monto del pago"},
+                        "reference": {"type": "string", "description": "Referencia externa del pago"},
+                        "user_id": {"type": "string", "description": "ID del usuario (telefono)"},
+                    },
+                    "required": ["amount", "reference"],
+                },
+            },
+        },
     ]
 
     try:
@@ -840,6 +860,26 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
                             except Exception as _exc:
                                 logger.warning("[LLM-ADMIN] Error ejecutando DML: %s", _exc)
                                 return f"Error ejecutando la operacion: {_exc}"
+                        if fn_name == "generate_payment_link":
+                            try:
+                                args = json.loads(fn.get("arguments", "{}"))
+                                amount = args.get("amount", RESERVATION_AMOUNT)
+                                reference = args.get("reference", f"WA_{phone}")
+                                user_id = args.get("user_id", phone)
+                                logger.info("[LLM-ADMIN] Generando link pago: amount=%s ref=%s", amount, reference)
+                                result = await asyncio.to_thread(
+                                    McpPayments().generate_payment_link,
+                                    amount=amount,
+                                    reference=reference,
+                                    user_id=user_id or phone,
+                                )
+                                link = result.get("link", "")
+                                if link:
+                                    return f"Link de pago generado: {link}"
+                                return f"Error generando link de pago: {result.get('error', 'desconocido')}"
+                            except Exception as _exc:
+                                logger.warning("[LLM-ADMIN] Error generando link pago: %s", _exc)
+                                return f"Error generando link de pago: {_exc}"
                 reply = (msg.get("content") or "").strip()
                 if reply:
                     return reply
@@ -997,19 +1037,32 @@ def _ejecutar_consulta_admin(text: str) -> str | None:
     for keywords, sql in _MAP:
         if any(k in t for k in keywords):
             logger.info("[ADMIN-QUERY] Consulta detectada: %r", keywords[0])
-            try:
-                loop = _asyncio.new_event_loop()
-                result = loop.run_until_complete(_run_query(sql))
-                loop.close()
-                if "error" in result:
-                    return f"[ERROR] {result['error']}"
-                return json.dumps(result, ensure_ascii=False, default=str)
-            except Exception as exc:
-                logger.warning("[ADMIN-QUERY] Error SQL: %s", exc)
-                return f"[ERROR] {exc}"
+            result = _run_query(sql)
+            if "error" in result:
+                return f"[ERROR] {result['error']}"
+            return json.dumps(result, ensure_ascii=False, default=str)
 
     logger.debug("[ADMIN-QUERY] No se detecto ninguna consulta conocida en: %r", t)
     return None
+
+
+def _run_query(sql: str) -> dict:
+    """Ejecuta una consulta SQL de lectura de forma sincrona para uso en consultas directas."""
+    import asyncio as _asyncio
+    _loop = _asyncio.new_event_loop()
+    try:
+        dsn = "postgresql://{user}:{password}@{host}:{port}/{database}".format(**DB_HOTEL)
+        _conn = _loop.run_until_complete(asyncpg.connect(dsn, timeout=15))
+        try:
+            _rows = _loop.run_until_complete(_conn.fetch(sql))
+            _cols = list(_rows[0].keys()) if _rows else []
+            return {"columns": _cols, "rows": [dict(r) for r in _rows], "count": len(_rows)}
+        finally:
+            _loop.run_until_complete(_conn.close())
+    except Exception as _exc:
+        return {"error": str(_exc)}
+    finally:
+        _loop.close()
 
 
 def _detect_payment_intent(text: str) -> bool:
@@ -1170,7 +1223,7 @@ async def _worker_wa() -> None:
 
                         async def _do_build() -> str:
                             return (
-                                await _build_reply_admin(text, msg.get("name", "Admin"), _admin_history, is_adm)
+                                await _build_reply_admin(text, msg.get("name", "Admin"), _admin_history, is_adm, msg.get("phone", ""))
                                 if is_adm else
                                 await _build_reply(text, msg.get("name", "Usuario"), _admin_history)
                             )
@@ -1271,7 +1324,7 @@ async def test_llm_admin(body: LLMAdminTestRequest):
                                 password=REDIS_PASSWORD, decode_responses=True)
         history = await _get_history(f"admin_test:{body.name}", r_test)
         # is_adm=True forza modo admin completo
-        reply = await _build_reply_admin(body.message, body.name, history, is_adm=True)
+        reply = await _build_reply_admin(body.message, body.name, history, is_adm=True, phone="")
         await _save_turn(f"admin_test:{body.name}", body.message, reply, r_test)
         await r_test.close()
     except Exception:
@@ -1279,7 +1332,7 @@ async def test_llm_admin(body: LLMAdminTestRequest):
                               password=REDIS_PASSWORD, decode_responses=True)
         fb_history = await _get_history(f"admin_test:{body.name}", r_fb)
         await r_fb.close()
-        reply = await _build_reply_admin(body.message, body.name, fb_history, is_adm=True)
+        reply = await _build_reply_admin(body.message, body.name, fb_history, is_adm=True, phone="")
     return {"reply": reply}
 
 
