@@ -668,15 +668,23 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
     # ── Respuesta directa por defecto: ejecutar schema o datos sin Ollama ─────
     logger.info("[ADMIN] _build_reply_admin INICIO: text=%r", text[:80])
 
-    # Paso 1: consultas directas conocidas (ver reservas, habitaciones, etc.)
-    direct = await asyncio.to_thread(_ejecutar_consulta_admin, text)
-    if direct is not None:
-        logger.info("[ADMIN] Consulta directa ejecutada (%d chars)", len(direct))
-        return direct
-
-    # Paso 2: si el admin pide estructura/ver tablas/schema, ejecutar
-    # consulta contra information_schema sin depender de Ollama
+    # Paso 1: saludos directos (respuesta inmediata sin Ollama)
     t = text.lower().strip()
+    if any(w in t for w in ["hola", "buenas", "buenos dias", "buenas tardes", "buenas noches"]):
+        return f"Hola {name}. Eres un administrador del hotel. ¿Qué deseas consultar hoy?"
+
+    # Paso 1b: consultas de identidad para admins
+    if any(phrase in t for phrase in ["dime quien soy", "quien soy", "quien eres", "eres admin", "identidad"]):
+        return f"Eres un administrador del hotel (teléfono: {phone}). Tenés acceso completo a la base de datos. ¿Qué deseas consultar?"
+
+    # Paso 2: consultas directas conocidas (ver reservas, habitaciones, etc.)
+    direct = await asyncio.to_thread(_ejecutar_consulta_admin, text, phone)
+    if direct is not None:
+         logger.info("[ADMIN] Consulta directa ejecutada (%d chars)", len(direct))
+         return direct
+
+    # Paso 3: si el admin pide estructura/ver tablas/schema, ejecutar
+    # consulta contra information_schema sin depender de Ollama
     if any(k in t for k in [
         "estructura", "esquema", "schema", "tablas", "tabla",
         "ver toda", "todas las", "todos los", "mostrar toda",
@@ -914,7 +922,8 @@ _CONSULTA_HABITACIONES = (
 )
 _CONSULTA_CLIENTES = (
     "ver todos los clientes", "mostrar clientes", "listar clientes",
-    "todos los huespedes", "ver huespedes",
+    "todos los huespedes", "ver huespedes", "dime quien soy", "quien soy",
+    "quien eres", "eres admin", "identidad", "quien soy yo"
 )
 _CONSULTA_PAGOS = (
     "ver pagos", "ver transacciones", "transacciones de pago",
@@ -926,7 +935,7 @@ _CONSULTA_CHECKINS = (
 )
 
 
-def _ejecutar_consulta_admin(text: str) -> str | None:
+def _ejecutar_consulta_admin(text: str, phone: str = "") -> str | None:
     """
     Si el texto del admin coincide con una consulta conocida, ejecuta SQL y
     devuelve el resultado formateado.
@@ -1022,10 +1031,7 @@ def _ejecutar_consulta_admin(text: str) -> str | None:
                                 "FROM clients c "
                                 "LEFT JOIN tipo_documento td ON c.id_tipo_documento = td.id "
                                 "ORDER BY c.created_at DESC LIMIT 50"),
-        (_CONSULTA_PAGOS,       "SELECT t.id, t.payment_id, t.amount, t.status, "
-                                "t.payer_name, t.date_created "
-                                "FROM transacciones t "
-                                "ORDER BY t.created_at DESC LIMIT 50"),
+(_CONSULTA_PAGOS,       None),  # Pagos se consulta vía Ollama con execute_sql
         (_CONSULTA_CHECKINS,    "SELECT ci.id, ci.reservation_id, ro.room_number, "
                                 "ci.actual_check_in, ci.actual_check_out, ci.created_at "
                                 "FROM checkins ci "
@@ -1040,7 +1046,18 @@ def _ejecutar_consulta_admin(text: str) -> str | None:
             result = _run_query(sql)
             if "error" in result:
                 return f"[ERROR] {result['error']}"
-            return json.dumps(result, ensure_ascii=False, default=str)
+            if result.get("count", 0) == 0:
+                return "No se encontraron registros en la base de datos."
+            cols = result.get("columns", [])
+            rows = result.get("rows", [])
+            lines = [f"**{result['count']} resultado(s) encontrado(s):**\n",
+                     "| " + " | ".join(str(c) for c in cols) + " |",
+                     "|" + "|".join("---" for _ in cols) + "|"]
+            for row in rows[:50]:
+                lines.append("| " + " | ".join(str(row.get(c,"")) for c in cols) + " |")
+            if result["count"] > 50:
+                lines.append(f"\n(Se muestran los primeros 50 de {result['count']} registros.)")
+            return "\n".join(lines)
 
     logger.debug("[ADMIN-QUERY] No se detecto ninguna consulta conocida en: %r", t)
     return None
@@ -1174,28 +1191,15 @@ async def _worker_wa() -> None:
                     # ── Regla 3: recuperar historial y responder con LLM ──────────────────
                     history: list[dict] = []
                     try:
-                        # Ahorrar latencia para admin: solo traer los ultimos turnos
                         hist_key = f"chat_history:{msg['phone']}"
-                        if is_adm:
-                            try:
-                                raw_hist = await asyncio.wait_for(
-                                    r.lrange(hist_key, -20, -1), timeout=5.0
-                                )
-                                if raw_hist:
-                                    import json as _json
-                                    history = [_json.loads(m) for m in reversed(raw_hist) if m]
-                                logger.debug(
-                                    f"[HISTORY] Telefono={msg['phone']} (admin) — {len(history)} turnos recuperados"
-                                )
-                            except asyncio.TimeoutError:
-                                logger.warning(f"[HISTORY] Timeout lrange para {msg['phone']}, continuando sin historial")
-                        else:
-                            history = await asyncio.wait_for(
-                                _get_history(msg["phone"], r), timeout=5.0
-                            )
-                            logger.debug(
-                                f"[HISTORY] Telefono={msg['phone']} — {len(history)} mensajes en contexto"
-                            )
+                        history = await asyncio.wait_for(
+                            _get_history(msg["phone"], r), timeout=5.0
+                        )
+                        logger.debug(
+                            f"[HISTORY] Telefono={msg['phone']} — {len(history)} mensajes en contexto"
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(f"[HISTORY] Timeout para {msg['phone']}, continuando sin historial")
                     except Exception as e:
                         logger.warning(f"[HISTORY] No se pudo recuperar historial: {e}")
 
@@ -1291,6 +1295,7 @@ class LLMTestRequest(BaseModel):
 class LLMAdminTestRequest(BaseModel):
     message: str
     name: str = "Admin"
+    phone: str = ""
 
 
 @app.post("/", response_model=dict)
@@ -1324,7 +1329,7 @@ async def test_llm_admin(body: LLMAdminTestRequest):
                                 password=REDIS_PASSWORD, decode_responses=True)
         history = await _get_history(f"admin_test:{body.name}", r_test)
         # is_adm=True forza modo admin completo
-        reply = await _build_reply_admin(body.message, body.name, history, is_adm=True, phone="")
+        reply = await _build_reply_admin(body.message, body.name, history, is_adm=True, phone=body.phone)
         await _save_turn(f"admin_test:{body.name}", body.message, reply, r_test)
         await r_test.close()
     except Exception:
@@ -1332,7 +1337,7 @@ async def test_llm_admin(body: LLMAdminTestRequest):
                               password=REDIS_PASSWORD, decode_responses=True)
         fb_history = await _get_history(f"admin_test:{body.name}", r_fb)
         await r_fb.close()
-        reply = await _build_reply_admin(body.message, body.name, fb_history, is_adm=True, phone="")
+        reply = await _build_reply_admin(body.message, body.name, fb_history, is_adm=True, phone=body.phone)
     return {"reply": reply}
 
 
