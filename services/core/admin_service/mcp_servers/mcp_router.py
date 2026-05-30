@@ -155,3 +155,53 @@ async def _ejecutar_dml(query: str, params: list | None = None, cmd: str = "") -
             await conn.close()
     except Exception as exc:
         return {"success": False, "error": f"No se pudo conectar a DB: {exc}", "rows_affected": 0, "last_insert_id": None}
+
+# ── DB Payments (transacciones) ────────────────────────────────────────────────────
+_DB_PAYMENTS = {
+    "host":     os.getenv("DB_PAYMENTS_HOST"),
+    "port":     int(os.getenv("DB_PAYMENTS_PORT", 5433)),
+    "user":     os.getenv("DB_PAYMENTS_USER"),
+    "password": os.getenv("DB_PAYMENTS_PASSWORD"),
+    "database": os.getenv("DB_PAYMENTS_NAME"),
+}
+_DSN_PAYMENTS = "postgresql://{user}:{password}@{host}:{port}/{database}".format(**_DB_PAYMENTS)
+
+
+async def _ejecutar_sql_payments(query: str, params: list | None = None) -> dict:
+    """Ejecuta una consulta SQL de lectura sobre DB de pagos."""
+    try:
+        conn = await asyncpg.connect(_DSN_PAYMENTS, timeout=15)
+        try:
+            rows = await conn.fetch(query, *(params or []))
+            if rows:
+                cols = list(rows[0].keys())
+                data = [dict(r) for r in rows]
+            else:
+                cols = []
+                data = []
+            return {"ok": True, "columns": cols, "rows": data, "count": len(data)}
+        except Exception as exc:
+            _logger.warning("[McpRouter:sql_payments] error: %s", exc)
+            return {"ok": False, "error": str(exc), "columns": [], "rows": [], "count": 0}
+        finally:
+            await conn.close()
+    except Exception as exc:
+        return {"ok": False, "error": f"No se pudo conectar a DB de pagos: {exc}", "columns": [], "rows": [], "count": 0}
+
+
+def execute_sql_payments(query: str, params: list | None = None) -> dict:
+    """
+    Ejecuta consultas SQL de LECTURA sobre la base de datos de pagos (transacciones).
+    Uso: execute_sql_payments(query="SELECT * FROM transacciones ORDER BY created_at DESC LIMIT 50")
+    Devuelve: {ok, columns, rows, count}
+    """
+    import re
+    q = (query or "").strip()
+    # Solo SELECT sobre transacciones/payment_links
+    if not q.upper().startswith(("SELECT", "SHOW", "WITH", "EXPLAIN")):
+        return {"ok": False, "error": "Solo se permiten consultas de lectura.", "columns": [], "rows": [], "count": 0}
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_ejecutar_sql_payments(q, params))
+    finally:
+        loop.close()

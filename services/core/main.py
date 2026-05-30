@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 # ── MCP Servers ────────────────────────────────────────────────────────────────
 from customer_service.mcp_servers.mcp_payments import McpPayments  # noqa: E402
-from admin_service.mcp_servers.mcp_router import execute_sql, execute_dml  # noqa: E402
+from admin_service.mcp_servers.mcp_router import execute_sql, execute_dml, execute_sql_payments  # noqa: E402
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -684,12 +684,11 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
          return direct
 
     # Paso 3: si el admin pide estructura/ver tablas/schema, ejecutar
-    # consulta contra information_schema sin depender de Ollama
+    # consulta contra information_schema sin depender de Ollama (excluir pagos que usa execute_sql_payments)
     if any(k in t for k in [
-        "estructura", "esquema", "schema", "tablas", "tabla",
-        "ver toda", "todas las", "todos los", "mostrar toda",
-        "base de datos", "columnas", "campos",
-    ]):
+        "estructura", "esquema", "schema", "tablas",
+        "columnas", "campos",
+    ]) and "pago" not in t:
         logger.info("[ADMIN] Consulta de estructura detectada — ejecutando info_schema")
         try:
             result = await _exec_sql(
@@ -785,10 +784,50 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
                 },
             },
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "generate_payment_link",
+{
+             "type": "function",
+             "function": {
+                 "name": "execute_dml",
+                 "description": (
+                     "EJECUTA operaciones de ESCRITURA (INSERT, UPDATE, DELETE) sobre la base de datos del hotel. "
+                     "BLOQUEA DDL (DROP/ALTER/CREATE/TRUNCATE/GRANT/REVOKE). "
+                     "Usa $1, $2, $3 ... para parametros."
+                 ),
+                 "parameters": {
+                     "type": "object",
+                     "properties": {
+                         "query": {"type": "string", "description": "Consulta SQL de escritura (INSERT/UPDATE/DELETE)"},
+                         "params": {"type": "array", "items": {"type": "string"}, "description": "Lista de valores para los parametros $1, $2, etc."},
+                     },
+                     "required": ["query"],
+                 },
+             },
+         },
+         {
+             "type": "function",
+             "function": {
+                 "name": "execute_sql_payments",
+                 "description": (
+                     "Ejecuta una consulta SQL de LECTURA sobre la base de datos de pagos (transacciones). "
+                     "Usala cuando el admin pida ver pagos, transacciones, o historial de pagos. "
+                     "La tabla es 'transacciones'. "
+                     "BLOQUEA INSERT/UPDATE/DELETE/DROP. "
+                     "Devuelve columnas + filas como lista de diccionarios."
+                 ),
+                 "parameters": {
+                     "type": "object",
+                     "properties": {
+                         "query": {"type": "string", "description": "Consulta SQL de lectura sobre transacciones"},
+                         "params": {"type": "array", "items": {"type": "string"}, "description": "Parametros opcionales"},
+                     },
+                     "required": ["query"],
+                 },
+             },
+         },
+         {
+             "type": "function",
+             "function": {
+                 "name": "generate_payment_link",
                 "description": (
                     "Genera un link de pago MercadoPago. "
                     "Usa amount=150.0 como monto default para reservas. "
@@ -855,20 +894,47 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
                             except Exception as _exc:
                                 logger.warning("[LLM-ADMIN] Error ejecutando SQL: %s", _exc)
                                 return f"Error ejecutando la consulta: {_exc}"
-                        if fn_name == "execute_dml":
-                            try:
-                                args = json.loads(fn.get("arguments", "{}"))
-                                q = args.get("query", "")
-                                p = args.get("params")
-                                logger.info("[LLM-ADMIN] Ejecutando DML: %s", q[:120])
-                                result = await asyncio.to_thread(execute_dml, q, p)
-                                if result.get("success"):
-                                    return result.get("message", "Operacion ejecutada correctamente.")
-                                return f"Error ejecutando la operacion: {result.get('error')}"
-                            except Exception as _exc:
-                                logger.warning("[LLM-ADMIN] Error ejecutando DML: %s", _exc)
-                                return f"Error ejecutando la operacion: {_exc}"
-                        if fn_name == "generate_payment_link":
+if fn_name == "execute_dml":
+                             try:
+                                 args = json.loads(fn.get("arguments", "{}"))
+                                 q = args.get("query", "")
+                                 p = args.get("params")
+                                 logger.info("[LLM-ADMIN] Ejecutando DML: %s", q[:120])
+                                 result = await asyncio.to_thread(execute_dml, q, p)
+                                 if result.get("success"):
+                                     return result.get("message", "Operacion ejecutada correctamente.")
+                                 return f"Error ejecutando la operacion: {result.get('error')}"
+                             except Exception as _exc:
+                                 logger.warning("[LLM-ADMIN] Error ejecutando DML: %s", _exc)
+                                 return f"Error ejecutando la operacion: {_exc}"
+                         if fn_name == "execute_sql_payments":
+                             try:
+                                 args = json.loads(fn.get("arguments", "{}"))
+                                 q = args.get("query", "")
+                                 p = args.get("params")
+                                 logger.info("[LLM-ADMIN] Ejecutando SQL payments: %s", q[:120])
+                                 result = await asyncio.to_thread(execute_sql_payments, q, p)
+                                 if result.get("ok"):
+                                     rows = result.get("rows", [])
+                                     cols = result.get("columns", [])
+                                     cnt = result.get("count", 0)
+                                     if cnt == 0:
+                                         return "La consulta de pagos se ejecuto correctamente pero no hay resultados para mostrar."
+                                     lines = [f"**{cnt} transacciones encontradas:**\n",
+                                              "| " + " | ".join(str(c) for c in cols) + " |",
+                                              "|" + "|".join("---" for _ in cols) + "|"]
+                                     for row in rows[:50]:
+                                         lines.append("| " + " | ".join(str(row.get(c,"")) for c in cols) + " |")
+                                     if cnt > 50:
+                                         lines.append(f"\n(Se muestran los primeros 50 de {cnt} registros. "
+                                                      "Pide 'ver todos' para ampliar.)")
+                                     return "\n".join(lines)
+                                 else:
+                                     return f"Error en la consulta de pagos: {result.get('error')}"
+                             except Exception as _exc:
+                                 logger.warning("[LLM-ADMIN] Error ejecutando SQL payments: %s", _exc)
+                                 return f"Error ejecutando la consulta de pagos: {_exc}"
+                         if fn_name == "generate_payment_link":
                             try:
                                 args = json.loads(fn.get("arguments", "{}"))
                                 amount = args.get("amount", RESERVATION_AMOUNT)
@@ -945,6 +1011,20 @@ def _ejecutar_consulta_admin(text: str, phone: str = "") -> str | None:
 
     t = text.lower().strip()
     logger.debug("[ADMIN-QUERY] Texto recibido: %r", t)
+
+    # Handle payment queries (ver pagos, transacciones, base de datos de pagos)
+    if any(kw in t for kw in ["ver pagos", "ver transacciones", "transacciones de pago", "pagos recibidos", "listar pagos", "dame todos los registros de pagos", "base de datos de pagos", "registros de pagos", "mostrar pagos", "dame todos los registros de la base de datos de pagos"]):
+        result = _run_query_payments("SELECT id, payment_id, amount, status, external_reference, payer_name, payer_phone, date_created, date_approved FROM transacciones ORDER BY date_created DESC LIMIT 50")
+        if "error" in result:
+            return f"[ERROR] {result['error']}"
+        if result.get("count", 0) == 0:
+            return "No hay registros de pagos en la base de datos."
+        cols = result.get("columns", [])
+        rows = result.get("rows", [])
+        lines = [f"**{result['count']} transacciones encontradas:**\n", "| " + " | ".join(str(c) for c in cols) + " |"]
+        for row in rows[:50]:
+            lines.append("| " + " | ".join(str(row.get(c, "")) for c in cols) + " |")
+        return "\n".join(lines)
 
     # Handle date-specific reservation queries first
     if any(phrase in t for phrase in ["reservas para", "reservas del", "ver reservas para", "ver reservas del",
@@ -1069,6 +1149,24 @@ def _run_query(sql: str) -> dict:
     _loop = _asyncio.new_event_loop()
     try:
         dsn = "postgresql://{user}:{password}@{host}:{port}/{database}".format(**DB_HOTEL)
+        _conn = _loop.run_until_complete(asyncpg.connect(dsn, timeout=15))
+        try:
+            _rows = _loop.run_until_complete(_conn.fetch(sql))
+            _cols = list(_rows[0].keys()) if _rows else []
+            return {"columns": _cols, "rows": [dict(r) for r in _rows], "count": len(_rows)}
+        finally:
+            _loop.run_until_complete(_conn.close())
+    except Exception as _exc:
+        return {"error": str(_exc)}
+    finally:
+        _loop.close()
+
+def _run_query_payments(sql: str) -> dict:
+    """Ejecuta una consulta SQL de lectura sobre DB de pagos."""
+    import asyncio as _asyncio
+    _loop = _asyncio.new_event_loop()
+    dsn = "postgresql://{user}:{password}@{host}:{port}/{database}".format(**DB_PAYMENTS)
+    try:
         _conn = _loop.run_until_complete(asyncpg.connect(dsn, timeout=15))
         try:
             _rows = _loop.run_until_complete(_conn.fetch(sql))
