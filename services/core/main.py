@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 # ── MCP Servers ────────────────────────────────────────────────────────────────
 from customer_service.mcp_servers.mcp_payments import McpPayments  # noqa: E402
-from admin_service.mcp_servers.mcp_router import execute_sql, execute_dml, execute_sql_payments  # noqa: E402
+from admin_service.mcp_servers.mcp_router import execute_sql, execute_dml  # noqa: E402
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -668,27 +668,20 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
     # ── Respuesta directa por defecto: ejecutar schema o datos sin Ollama ─────
     logger.info("[ADMIN] _build_reply_admin INICIO: text=%r", text[:80])
 
-    # Paso 1: saludos directos (respuesta inmediata sin Ollama)
-    t = text.lower().strip()
-    if any(w in t for w in ["hola", "buenas", "buenos dias", "buenas tardes", "buenas noches"]):
-        return f"Hola {name}. Eres un administrador del hotel. ¿Qué deseas consultar hoy?"
-
-    # Paso 1b: consultas de identidad para admins
-    if any(phrase in t for phrase in ["dime quien soy", "quien soy", "quien eres", "eres admin", "identidad"]):
-        return f"Eres un administrador del hotel (teléfono: {phone}). Tenés acceso completo a la base de datos. ¿Qué deseas consultar?"
-
-    # Paso 2: consultas directas conocidas (ver reservas, habitaciones, etc.)
-    direct = await asyncio.to_thread(_ejecutar_consulta_admin, text, phone)
+    # Paso 1: consultas directas conocidas (ver reservas, habitaciones, etc.)
+    direct = await asyncio.to_thread(_ejecutar_consulta_admin, text)
     if direct is not None:
-         logger.info("[ADMIN] Consulta directa ejecutada (%d chars)", len(direct))
-         return direct
+        logger.info("[ADMIN] Consulta directa ejecutada (%d chars)", len(direct))
+        return direct
 
-    # Paso 3: si el admin pide estructura/ver tablas/schema, ejecutar
-    # consulta contra information_schema sin depender de Ollama (excluir pagos que usa execute_sql_payments)
+    # Paso 2: si el admin pide estructura/ver tablas/schema, ejecutar
+    # consulta contra information_schema sin depender de Ollama
+    t = text.lower().strip()
     if any(k in t for k in [
-        "estructura", "esquema", "schema", "tablas",
-        "columnas", "campos",
-    ]) and "pago" not in t:
+        "estructura", "esquema", "schema", "tablas", "tabla",
+        "ver toda", "todas las", "todos los", "mostrar toda",
+        "base de datos", "columnas", "campos",
+    ]):
         logger.info("[ADMIN] Consulta de estructura detectada — ejecutando info_schema")
         try:
             result = await _exec_sql(
@@ -784,50 +777,10 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
                 },
             },
         },
-{
-             "type": "function",
-             "function": {
-                 "name": "execute_dml",
-                 "description": (
-                     "EJECUTA operaciones de ESCRITURA (INSERT, UPDATE, DELETE) sobre la base de datos del hotel. "
-                     "BLOQUEA DDL (DROP/ALTER/CREATE/TRUNCATE/GRANT/REVOKE). "
-                     "Usa $1, $2, $3 ... para parametros."
-                 ),
-                 "parameters": {
-                     "type": "object",
-                     "properties": {
-                         "query": {"type": "string", "description": "Consulta SQL de escritura (INSERT/UPDATE/DELETE)"},
-                         "params": {"type": "array", "items": {"type": "string"}, "description": "Lista de valores para los parametros $1, $2, etc."},
-                     },
-                     "required": ["query"],
-                 },
-             },
-         },
-         {
-             "type": "function",
-             "function": {
-                 "name": "execute_sql_payments",
-                 "description": (
-                     "Ejecuta una consulta SQL de LECTURA sobre la base de datos de pagos (transacciones). "
-                     "Usala cuando el admin pida ver pagos, transacciones, o historial de pagos. "
-                     "La tabla es 'transacciones'. "
-                     "BLOQUEA INSERT/UPDATE/DELETE/DROP. "
-                     "Devuelve columnas + filas como lista de diccionarios."
-                 ),
-                 "parameters": {
-                     "type": "object",
-                     "properties": {
-                         "query": {"type": "string", "description": "Consulta SQL de lectura sobre transacciones"},
-                         "params": {"type": "array", "items": {"type": "string"}, "description": "Parametros opcionales"},
-                     },
-                     "required": ["query"],
-                 },
-             },
-         },
-         {
-             "type": "function",
-             "function": {
-                 "name": "generate_payment_link",
+        {
+            "type": "function",
+            "function": {
+                "name": "generate_payment_link",
                 "description": (
                     "Genera un link de pago MercadoPago. "
                     "Usa amount=150.0 como monto default para reservas. "
@@ -894,47 +847,20 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
                             except Exception as _exc:
                                 logger.warning("[LLM-ADMIN] Error ejecutando SQL: %s", _exc)
                                 return f"Error ejecutando la consulta: {_exc}"
-if fn_name == "execute_dml":
-                             try:
-                                 args = json.loads(fn.get("arguments", "{}"))
-                                 q = args.get("query", "")
-                                 p = args.get("params")
-                                 logger.info("[LLM-ADMIN] Ejecutando DML: %s", q[:120])
-                                 result = await asyncio.to_thread(execute_dml, q, p)
-                                 if result.get("success"):
-                                     return result.get("message", "Operacion ejecutada correctamente.")
-                                 return f"Error ejecutando la operacion: {result.get('error')}"
-                             except Exception as _exc:
-                                 logger.warning("[LLM-ADMIN] Error ejecutando DML: %s", _exc)
-                                 return f"Error ejecutando la operacion: {_exc}"
-                         if fn_name == "execute_sql_payments":
-                             try:
-                                 args = json.loads(fn.get("arguments", "{}"))
-                                 q = args.get("query", "")
-                                 p = args.get("params")
-                                 logger.info("[LLM-ADMIN] Ejecutando SQL payments: %s", q[:120])
-                                 result = await asyncio.to_thread(execute_sql_payments, q, p)
-                                 if result.get("ok"):
-                                     rows = result.get("rows", [])
-                                     cols = result.get("columns", [])
-                                     cnt = result.get("count", 0)
-                                     if cnt == 0:
-                                         return "La consulta de pagos se ejecuto correctamente pero no hay resultados para mostrar."
-                                     lines = [f"**{cnt} transacciones encontradas:**\n",
-                                              "| " + " | ".join(str(c) for c in cols) + " |",
-                                              "|" + "|".join("---" for _ in cols) + "|"]
-                                     for row in rows[:50]:
-                                         lines.append("| " + " | ".join(str(row.get(c,"")) for c in cols) + " |")
-                                     if cnt > 50:
-                                         lines.append(f"\n(Se muestran los primeros 50 de {cnt} registros. "
-                                                      "Pide 'ver todos' para ampliar.)")
-                                     return "\n".join(lines)
-                                 else:
-                                     return f"Error en la consulta de pagos: {result.get('error')}"
-                             except Exception as _exc:
-                                 logger.warning("[LLM-ADMIN] Error ejecutando SQL payments: %s", _exc)
-                                 return f"Error ejecutando la consulta de pagos: {_exc}"
-                         if fn_name == "generate_payment_link":
+                        if fn_name == "execute_dml":
+                            try:
+                                args = json.loads(fn.get("arguments", "{}"))
+                                q = args.get("query", "")
+                                p = args.get("params")
+                                logger.info("[LLM-ADMIN] Ejecutando DML: %s", q[:120])
+                                result = await asyncio.to_thread(execute_dml, q, p)
+                                if result.get("success"):
+                                    return result.get("message", "Operacion ejecutada correctamente.")
+                                return f"Error ejecutando la operacion: {result.get('error')}"
+                            except Exception as _exc:
+                                logger.warning("[LLM-ADMIN] Error ejecutando DML: %s", _exc)
+                                return f"Error ejecutando la operacion: {_exc}"
+                        if fn_name == "generate_payment_link":
                             try:
                                 args = json.loads(fn.get("arguments", "{}"))
                                 amount = args.get("amount", RESERVATION_AMOUNT)
@@ -988,8 +914,7 @@ _CONSULTA_HABITACIONES = (
 )
 _CONSULTA_CLIENTES = (
     "ver todos los clientes", "mostrar clientes", "listar clientes",
-    "todos los huespedes", "ver huespedes", "dime quien soy", "quien soy",
-    "quien eres", "eres admin", "identidad", "quien soy yo"
+    "todos los huespedes", "ver huespedes",
 )
 _CONSULTA_PAGOS = (
     "ver pagos", "ver transacciones", "transacciones de pago",
@@ -1001,7 +926,7 @@ _CONSULTA_CHECKINS = (
 )
 
 
-def _ejecutar_consulta_admin(text: str, phone: str = "") -> str | None:
+def _ejecutar_consulta_admin(text: str) -> str | None:
     """
     Si el texto del admin coincide con una consulta conocida, ejecuta SQL y
     devuelve el resultado formateado.
@@ -1011,20 +936,6 @@ def _ejecutar_consulta_admin(text: str, phone: str = "") -> str | None:
 
     t = text.lower().strip()
     logger.debug("[ADMIN-QUERY] Texto recibido: %r", t)
-
-    # Handle payment queries (ver pagos, transacciones, base de datos de pagos)
-    if any(kw in t for kw in ["ver pagos", "ver transacciones", "transacciones de pago", "pagos recibidos", "listar pagos", "dame todos los registros de pagos", "base de datos de pagos", "registros de pagos", "mostrar pagos", "dame todos los registros de la base de datos de pagos"]):
-        result = _run_query_payments("SELECT id, payment_id, amount, status, external_reference, payer_name, payer_phone, date_created, date_approved FROM transacciones ORDER BY date_created DESC LIMIT 50")
-        if "error" in result:
-            return f"[ERROR] {result['error']}"
-        if result.get("count", 0) == 0:
-            return "No hay registros de pagos en la base de datos."
-        cols = result.get("columns", [])
-        rows = result.get("rows", [])
-        lines = [f"**{result['count']} transacciones encontradas:**\n", "| " + " | ".join(str(c) for c in cols) + " |"]
-        for row in rows[:50]:
-            lines.append("| " + " | ".join(str(row.get(c, "")) for c in cols) + " |")
-        return "\n".join(lines)
 
     # Handle date-specific reservation queries first
     if any(phrase in t for phrase in ["reservas para", "reservas del", "ver reservas para", "ver reservas del",
@@ -1111,7 +1022,10 @@ def _ejecutar_consulta_admin(text: str, phone: str = "") -> str | None:
                                 "FROM clients c "
                                 "LEFT JOIN tipo_documento td ON c.id_tipo_documento = td.id "
                                 "ORDER BY c.created_at DESC LIMIT 50"),
-(_CONSULTA_PAGOS,       None),  # Pagos se consulta vía Ollama con execute_sql
+        (_CONSULTA_PAGOS,       "SELECT t.id, t.payment_id, t.amount, t.status, "
+                                "t.payer_name, t.date_created "
+                                "FROM transacciones t "
+                                "ORDER BY t.created_at DESC LIMIT 50"),
         (_CONSULTA_CHECKINS,    "SELECT ci.id, ci.reservation_id, ro.room_number, "
                                 "ci.actual_check_in, ci.actual_check_out, ci.created_at "
                                 "FROM checkins ci "
@@ -1126,18 +1040,7 @@ def _ejecutar_consulta_admin(text: str, phone: str = "") -> str | None:
             result = _run_query(sql)
             if "error" in result:
                 return f"[ERROR] {result['error']}"
-            if result.get("count", 0) == 0:
-                return "No se encontraron registros en la base de datos."
-            cols = result.get("columns", [])
-            rows = result.get("rows", [])
-            lines = [f"**{result['count']} resultado(s) encontrado(s):**\n",
-                     "| " + " | ".join(str(c) for c in cols) + " |",
-                     "|" + "|".join("---" for _ in cols) + "|"]
-            for row in rows[:50]:
-                lines.append("| " + " | ".join(str(row.get(c,"")) for c in cols) + " |")
-            if result["count"] > 50:
-                lines.append(f"\n(Se muestran los primeros 50 de {result['count']} registros.)")
-            return "\n".join(lines)
+            return json.dumps(result, ensure_ascii=False, default=str)
 
     logger.debug("[ADMIN-QUERY] No se detecto ninguna consulta conocida en: %r", t)
     return None
@@ -1149,24 +1052,6 @@ def _run_query(sql: str) -> dict:
     _loop = _asyncio.new_event_loop()
     try:
         dsn = "postgresql://{user}:{password}@{host}:{port}/{database}".format(**DB_HOTEL)
-        _conn = _loop.run_until_complete(asyncpg.connect(dsn, timeout=15))
-        try:
-            _rows = _loop.run_until_complete(_conn.fetch(sql))
-            _cols = list(_rows[0].keys()) if _rows else []
-            return {"columns": _cols, "rows": [dict(r) for r in _rows], "count": len(_rows)}
-        finally:
-            _loop.run_until_complete(_conn.close())
-    except Exception as _exc:
-        return {"error": str(_exc)}
-    finally:
-        _loop.close()
-
-def _run_query_payments(sql: str) -> dict:
-    """Ejecuta una consulta SQL de lectura sobre DB de pagos."""
-    import asyncio as _asyncio
-    _loop = _asyncio.new_event_loop()
-    dsn = "postgresql://{user}:{password}@{host}:{port}/{database}".format(**DB_PAYMENTS)
-    try:
         _conn = _loop.run_until_complete(asyncpg.connect(dsn, timeout=15))
         try:
             _rows = _loop.run_until_complete(_conn.fetch(sql))
@@ -1289,15 +1174,28 @@ async def _worker_wa() -> None:
                     # ── Regla 3: recuperar historial y responder con LLM ──────────────────
                     history: list[dict] = []
                     try:
+                        # Ahorrar latencia para admin: solo traer los ultimos turnos
                         hist_key = f"chat_history:{msg['phone']}"
-                        history = await asyncio.wait_for(
-                            _get_history(msg["phone"], r), timeout=5.0
-                        )
-                        logger.debug(
-                            f"[HISTORY] Telefono={msg['phone']} — {len(history)} mensajes en contexto"
-                        )
-                    except asyncio.TimeoutError:
-                        logger.warning(f"[HISTORY] Timeout para {msg['phone']}, continuando sin historial")
+                        if is_adm:
+                            try:
+                                raw_hist = await asyncio.wait_for(
+                                    r.lrange(hist_key, -20, -1), timeout=5.0
+                                )
+                                if raw_hist:
+                                    import json as _json
+                                    history = [_json.loads(m) for m in reversed(raw_hist) if m]
+                                logger.debug(
+                                    f"[HISTORY] Telefono={msg['phone']} (admin) — {len(history)} turnos recuperados"
+                                )
+                            except asyncio.TimeoutError:
+                                logger.warning(f"[HISTORY] Timeout lrange para {msg['phone']}, continuando sin historial")
+                        else:
+                            history = await asyncio.wait_for(
+                                _get_history(msg["phone"], r), timeout=5.0
+                            )
+                            logger.debug(
+                                f"[HISTORY] Telefono={msg['phone']} — {len(history)} mensajes en contexto"
+                            )
                     except Exception as e:
                         logger.warning(f"[HISTORY] No se pudo recuperar historial: {e}")
 
@@ -1393,7 +1291,6 @@ class LLMTestRequest(BaseModel):
 class LLMAdminTestRequest(BaseModel):
     message: str
     name: str = "Admin"
-    phone: str = ""
 
 
 @app.post("/", response_model=dict)
@@ -1427,7 +1324,7 @@ async def test_llm_admin(body: LLMAdminTestRequest):
                                 password=REDIS_PASSWORD, decode_responses=True)
         history = await _get_history(f"admin_test:{body.name}", r_test)
         # is_adm=True forza modo admin completo
-        reply = await _build_reply_admin(body.message, body.name, history, is_adm=True, phone=body.phone)
+        reply = await _build_reply_admin(body.message, body.name, history, is_adm=True, phone="")
         await _save_turn(f"admin_test:{body.name}", body.message, reply, r_test)
         await r_test.close()
     except Exception:
@@ -1435,7 +1332,7 @@ async def test_llm_admin(body: LLMAdminTestRequest):
                               password=REDIS_PASSWORD, decode_responses=True)
         fb_history = await _get_history(f"admin_test:{body.name}", r_fb)
         await r_fb.close()
-        reply = await _build_reply_admin(body.message, body.name, fb_history, is_adm=True, phone=body.phone)
+        reply = await _build_reply_admin(body.message, body.name, fb_history, is_adm=True, phone="")
     return {"reply": reply}
 
 
