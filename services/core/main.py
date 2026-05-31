@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 # ── MCP Servers ────────────────────────────────────────────────────────────────
 from customer_service.mcp_servers.mcp_payments import McpPayments  # noqa: E402
-from admin_service.mcp_servers.mcp_router import execute_sql, execute_dml  # noqa: E402
+from admin_service.mcp_servers.mcp_router import execute_sql, execute_dml, execute_sql_payments  # noqa: E402
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -668,6 +668,12 @@ async def _build_reply_admin(text: str, name: str, history: list[dict] | None = 
     # ── Respuesta directa por defecto: ejecutar schema o datos sin Ollama ─────
     logger.info("[ADMIN] _build_reply_admin INICIO: text=%r", text[:80])
 
+    t = text.lower().strip()
+
+    # Paso 1b: consultas de identidad para admins
+    if any(phrase in t for phrase in ["dime quien soy", "quien soy", "quien eres", "eres admin", "identidad"]):
+        return f"Eres un administrador del hotel (teléfono: {phone}). Tenés acceso completo a la base de datos. ¿Qué deseas consultar?"
+
     # Paso 1: consultas directas conocidas (ver reservas, habitaciones, etc.)
     direct = await asyncio.to_thread(_ejecutar_consulta_admin, text)
     if direct is not None:
@@ -937,6 +943,21 @@ def _ejecutar_consulta_admin(text: str) -> str | None:
     t = text.lower().strip()
     logger.debug("[ADMIN-QUERY] Texto recibido: %r", t)
 
+    # Handle payment queries (ver pagos, transacciones, base de datos de pagos)
+    if any(kw in t for kw in ["ver pagos", "ver transacciones", "transacciones de pago", "pagos recibidos", "listar pagos", "dame todos los registros de pagos", "base de datos de pagos"]):
+        result = _run_query_payments("SELECT id, payment_id, amount, status, external_reference, payer_name, payer_phone, date_created, date_approved FROM transacciones ORDER BY date_created DESC LIMIT 50")
+        if "error" in result:
+            return f"[ERROR] {result['error']}"
+        cols = result.get("columns", [])
+        rows = result.get("rows", [])
+        count = result.get("count", 0)
+        if count == 0:
+            return "No hay registros de pagos en la base de datos."
+        lines = [f"**{count} transacciones encontradas:**\n", "| " + " | ".join(str(c) for c in cols) + " |"]
+        for row in rows[:50]:
+            lines.append("| " + " | ".join(str(row.get(c,"")) for c in cols) + " |")
+        return "\n".join(lines)
+
     # Handle date-specific reservation queries first
     if any(phrase in t for phrase in ["reservas para", "reservas del", "ver reservas para", "ver reservas del",
                                       "mostrar reservas para", "mostrar reservas del", "listar reservas para",
@@ -1017,15 +1038,12 @@ def _ejecutar_consulta_admin(text: str) -> str | None:
                                    "JOIN tipo_habitacion th ON ro.id_tipo_hab = th.id "
                                    "JOIN estado_habitacion eh ON ro.id_estado_hab = eh.id "
                                    "ORDER BY ro.room_number"),
-        (_CONSULTA_CLIENTES,    "SELECT c.id, c.name, c.doc_identidad, "
-                                "td.nombre AS tipo_doc, c.whatsapp_number, c.created_at "
-                                "FROM clients c "
-                                "LEFT JOIN tipo_documento td ON c.id_tipo_documento = td.id "
-                                "ORDER BY c.created_at DESC LIMIT 50"),
-        (_CONSULTA_PAGOS,       "SELECT t.id, t.payment_id, t.amount, t.status, "
-                                "t.payer_name, t.date_created "
-                                "FROM transacciones t "
-                                "ORDER BY t.created_at DESC LIMIT 50"),
+(_CONSULTA_CLIENTES,    "SELECT c.id, c.name, c.doc_identidad, "
+                                 "td.nombre AS tipo_doc, c.whatsapp_number, c.created_at "
+                                 "FROM clients c "
+                                 "LEFT JOIN tipo_documento td ON c.id_tipo_documento = td.id "
+                                 "ORDER BY c.created_at DESC LIMIT 50"),
+         (_CONSULTA_PAGOS,       None),  # Pagos se consulta vía DB de pagos con _run_query_payments
         (_CONSULTA_CHECKINS,    "SELECT ci.id, ci.reservation_id, ro.room_number, "
                                 "ci.actual_check_in, ci.actual_check_out, ci.created_at "
                                 "FROM checkins ci "
@@ -1040,7 +1058,16 @@ def _ejecutar_consulta_admin(text: str) -> str | None:
             result = _run_query(sql)
             if "error" in result:
                 return f"[ERROR] {result['error']}"
-            return json.dumps(result, ensure_ascii=False, default=str)
+            # Formatear la respuesta con tabla markdown
+            cols = result.get("columns", [])
+            rows = result.get("rows", [])
+            count = result.get("count", 0)
+            if count == 0:
+                return "No se encontraron registros en la base de datos."
+            lines = [f"**{count} resultado(s) encontrado(s):**\n", "| " + " | ".join(str(c) for c in cols) + " |"]
+            for row in rows[:50]:
+                lines.append("| " + " | ".join(str(row.get(c,"")) for c in cols) + " |")
+            return "\n".join(lines)
 
     logger.debug("[ADMIN-QUERY] No se detecto ninguna consulta conocida en: %r", t)
     return None
@@ -1052,6 +1079,25 @@ def _run_query(sql: str) -> dict:
     _loop = _asyncio.new_event_loop()
     try:
         dsn = "postgresql://{user}:{password}@{host}:{port}/{database}".format(**DB_HOTEL)
+        _conn = _loop.run_until_complete(asyncpg.connect(dsn, timeout=15))
+        try:
+            _rows = _loop.run_until_complete(_conn.fetch(sql))
+            _cols = list(_rows[0].keys()) if _rows else []
+            return {"columns": _cols, "rows": [dict(r) for r in _rows], "count": len(_rows)}
+        finally:
+            _loop.run_until_complete(_conn.close())
+    except Exception as _exc:
+        return {"error": str(_exc)}
+    finally:
+        _loop.close()
+
+
+def _run_query_payments(sql: str) -> dict:
+    """Ejecuta una consulta SQL de lectura sobre DB de pagos."""
+    import asyncio as _asyncio
+    _loop = _asyncio.new_event_loop()
+    dsn = "postgresql://{user}:{password}@{host}:{port}/{database}".format(**DB_PAYMENTS)
+    try:
         _conn = _loop.run_until_complete(asyncpg.connect(dsn, timeout=15))
         try:
             _rows = _loop.run_until_complete(_conn.fetch(sql))
