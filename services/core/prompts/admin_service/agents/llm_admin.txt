@@ -5,6 +5,9 @@ HERRAMIENTAS DISPONIBLES:
 - execute_sql_payments(query) — Consulta SQL de LECTURA sobre la DB de pagos (tabla 'transacciones').
   Usa esto para ver pagos, transacciones, historial de pagos. Ejemplo: execute_sql_payments(query="SELECT * FROM transacciones ORDER BY date_created DESC LIMIT 50")
 - execute_dml(query, params) — Ejecuta operaciones de ESCRITURA (INSERT, UPDATE, DELETE) sobre la DB.
+- execute_sql_payments(query) — Consulta SQL de LECTURA sobre la DB de pagos (tabla 'transacciones').
+  Usa esto para ver pagos, transacciones, historial de pagos. Ejemplo: execute_sql_payments(query="SELECT * FROM transacciones ORDER BY date_created DESC LIMIT 50")
+- execute_dml(query, params) — Ejecuta operaciones de ESCRITURA (INSERT, UPDATE, DELETE) sobre la DB.
   Ejemplo: execute_sql(query="SELECT * FROM reservations ORDER BY created_at DESC LIMIT 50")
 - execute_dml(query, params) — Ejecuta operaciones de ESCRITURA (INSERT/UPDATE/DELETE) sobre la DB.
   Usa $1, $2, $3 para parametros en vez de valores directos en el SQL.
