@@ -44,17 +44,26 @@ class LLMAdminTestRequest(BaseModel):
 async def test_llm(body: LLMTestRequest):
     try:
         r = await redis_client.connect()
-        history = await redis_client.get_history("test_llm")
+        history = await redis_client.get_history("51999999999")
+        if not isinstance(history, list):
+            await r.delete("chat_history:51999999999")
+            history = []
         state = {
-            "phone": "test_llm",
+            "phone": "51999999999",
             "name": body.name,
             "message": body.message,
             "history": history,
             "is_admin": False,
+            "security_valid": True,
+            "blocked_reason": None,
+            "sender_info": {},
+            "intent": "general",
+            "agent_response": "",
+            "final_message": "",
         }
         result = await customer_graph.ainvoke(state)
         reply = result.get("final_message", "")
-        await redis_client.save_turn("test_llm", body.message, reply)
+        await redis_client.save_turn("51999999999", body.message, reply)
     except Exception as exc:
         logger.error("test_llm error: %s", exc)
         reply = "Error procesando solicitud."
@@ -64,17 +73,26 @@ async def test_llm(body: LLMTestRequest):
 async def test_llm_admin(body: LLMAdminTestRequest):
     try:
         r = await redis_client.connect()
-        history = await redis_client.get_history(f"admin_test:{body.name}")
+        history = await redis_client.get_history("51988888888")
+        if not isinstance(history, list):
+            await r.delete(f"chat_history:51988888888")
+            history = []
         state = {
-            "phone": f"admin_test:{body.name}",
-            "name": body.name,
+            "phone": "51988888888",
+            "name": f"admin_test:{body.name}",
             "message": body.message,
             "history": history,
             "is_admin": True,
+            "security_valid": True,
+            "blocked_reason": None,
+            "sender_info": {},
+            "intent": "general",
+            "agent_response": "",
+            "final_message": "",
         }
         result = await admin_graph.ainvoke(state)
         reply = result.get("final_message", "")
-        await redis_client.save_turn(f"admin_test:{body.name}", body.message, reply)
+        await redis_client.save_turn("51988888888", body.message, reply)
     except Exception as exc:
         logger.error("test_llm_admin error: %s", exc)
         reply = "Error procesando solicitud."
@@ -187,6 +205,8 @@ async def _worker_wa() -> None:
 
             if not validate_sender(phone):
                 logger.warning("[WA WORKER] Remitente no autorizado %s", phone)
+                if phone.startswith("test_"):
+                    continue
                 continue
             if not validate_message_content(text, phone):
                 logger.warning("[WA WORKER] Contenido bloqueado de %s", phone)
@@ -195,6 +215,13 @@ async def _worker_wa() -> None:
 
             history = await redis_client.get_history(phone)
             is_new = len(history) == 0
+
+            # Ensure history key is a list (fix WRONGTYPE from previous runs)
+            if not isinstance(history, list):
+                from lib.redis_client import redis_client as rc
+                await rc.connect()
+                await rc._client.delete(f"chat_history:{phone}")
+                history = []
 
             payment_note = None
             if not _admin and _detect_payment_intent(text):
