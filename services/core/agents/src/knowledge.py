@@ -4,19 +4,9 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from lib.ollama import get_llm
 from lib.datetime import get_current_datetime_block
+from lib.rag import search
 
 logger = logging.getLogger(__name__)
-
-# Simplified RAG — in production this would query pgvector via LangChain
-_FAKE_RAG_DB = {
-    "check-in": "Check-in: 3:00 PM. Check-out: 11:00 AM.",
-    "wifi": "WiFi gratuito en todas las áreas.",
-    "desayuno": "Desayuno: 7:00 AM - 10:00 AM.",
-    "estacionamiento": "Estacionamiento incluido.",
-    "cancelacion": "Cancelación gratuita hasta 48h antes.",
-    "mascotas": "No se permiten mascotas.",
-    "piscina": "Piscina: 6:00 AM - 10:00 PM.",
-}
 
 
 def _load_prompt(is_admin: bool) -> str:
@@ -35,21 +25,11 @@ def _load_prompt(is_admin: bool) -> str:
     return "Eres un agente de conocimientos del hotel. Responde con base en la información recuperada."
 
 
-async def rag_search(query: str, limit: int = 3) -> list[dict]:
-    """Search the RAG knowledge base (currently mock + could use LangChain PGVector)."""
-    q_lower = query.lower()
-    results = []
-    for key, text in _FAKE_RAG_DB.items():
-        if key in q_lower or any(word in q_lower for word in text.lower().split()):
-            results.append({"source": f"policy/{key}.txt", "content": text, "score": 0.95})
-    return results[:limit]
-
-
 async def knowledge_node(state: dict) -> dict:
     message = state.get("message", "")
     is_adm = state.get("is_admin", False)
 
-    docs = await rag_search(message)
+    docs = await search(message, limit=3)
     context = "\n".join(f"- {d['content']}" for d in docs) if docs else "No se encontró información específica."
 
     prompt_text = _load_prompt(is_adm)

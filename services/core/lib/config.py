@@ -19,14 +19,14 @@ class Settings(BaseSettings):
 
     # Payments DB
     db_payments_host: str = "db_payments"
-    db_payments_port: int = 5433
+    db_payments_port: int = 5432
     db_payments_name: str = "payments_db"
     db_payments_user: str = "payments_user"
     db_payments_password: str = "payments_password"
 
     # RAG DB
     db_rag_host: str = "db_rag"
-    db_rag_port: int = 5434
+    db_rag_port: int = 5432
     db_rag_name: str = "rag_db"
     db_rag_user: str = "rag_user"
     db_rag_password: str = "rag_password"
