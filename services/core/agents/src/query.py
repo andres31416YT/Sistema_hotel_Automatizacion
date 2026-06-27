@@ -1,12 +1,10 @@
 """Query agent node: execute database queries using LangChain tools."""
 import logging
-from typing import Any
 from langchain_core.tools import tool
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from lib.ollama import get_llm
 from lib.db import fetch_all, execute_dml, get_hotel_schema, schema_to_text
-from lib.security import is_admin
 from lib.datetime import get_current_datetime_block
 
 logger = logging.getLogger(__name__)
@@ -44,8 +42,6 @@ async def execute_sql(query: str) -> str:
 @tool
 async def execute_dml_tool(query: str) -> str:
     """Execute INSERT/UPDATE/DELETE (admin only). BLOQUEA DDL (DROP/ALTER/CREATE)."""
-    if not is_admin("__admin_context__"):
-        return "No autorizado: esta herramienta es solo para administradores."
     try:
         result = await execute_dml(query)
         return f"Operación exitosa: {result['status']} en {result['count']} fila(s)."

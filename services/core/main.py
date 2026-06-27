@@ -161,7 +161,7 @@ async def _generate_payment_link(phone: str, name: str) -> str | None:
         link = result.get("link", "")
         if link:
             return (
-                f"Bienvenido/a al hotel, {name}! 😊\n\n"
+                f"Bienvenido/a al hotel, {name}!\n\n"
                 f"Para confirmar tu reserva necesito completar el pago de S/150.00.\n\n"
                 f"Puedes pagar aqui:\n{link}\n\n"
                 f"Una vez realizado el pago, te confirmare tu reserva automaticamente."

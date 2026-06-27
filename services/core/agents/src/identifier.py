@@ -34,13 +34,28 @@ async def identifier_node(state: dict) -> dict:
                     "is_new_user": True,
                 })
                 is_new = True
+                try:
+                    new_row = await conn.fetchrow(
+                        "INSERT INTO clients (whatsapp_number, name) VALUES ($1, $2) RETURNING id, name, created_at",
+                        phone,
+                        name or "Usuario",
+                    )
+                    if new_row:
+                        sender_info["client_id"] = new_row["id"]
+                        sender_info["name"] = new_row["name"]
+                        sender_info["created_at"] = str(new_row["created_at"])
+                        sender_info["is_existing_client"] = False
+                        sender_info["is_new_user"] = True
+                        logger.info("Created new client %s (id=%s)", phone, new_row["id"])
+                except Exception as exc:
+                    logger.warning("Failed to create new client %s: %s", phone, exc)
         finally:
             await conn.close()
     except Exception as exc:
         logger.warning("Identifier DB query failed: %s", exc)
 
     if is_new and not name:
-        sender_info["name"] = "Usuario"
+        sender_info["name"] = sender_info.get("name") or "Usuario"
 
     logger.info("Identified sender %s: %s (new=%s)", phone, sender_info.get("name"), is_new)
     return {"sender_info": sender_info}
