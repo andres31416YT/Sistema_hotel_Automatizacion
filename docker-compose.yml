@@ -84,6 +84,17 @@ services:
       - ollama:/root/.ollama
     ports:
       - "11434:11434"
+    environment:
+      OLLAMA_NUM_GPU: "999"
+      OLLAMA_FLASH_ATTENTION: "true"
+      OLLAMA_KV_CACHE_TYPE: "f16"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     entrypoint: ["ollama", "serve"]
 
   db_hotel:
