@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     # Admin
     admin_phones: str = ""
 
+    # RAG
+    rag_provider: str = "pgvector"
+    rag_turbovec_path: str = "data/turbovec_index.tq"
+    rag_turbovec_bit_width: int = 4
+
     # App
     core_port: int = 8080
 

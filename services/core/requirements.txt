@@ -14,3 +14,4 @@ langchain-ollama>=0.2.0,<0.4
 langchain-community>=0.3.0,<0.4
 langgraph>=0.2.0,<0.3
 pgvector>=0.3.0
+turbovec>=0.1.0
