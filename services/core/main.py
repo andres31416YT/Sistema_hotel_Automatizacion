@@ -44,23 +44,36 @@ async def _send_wa_message(to: str, text: str) -> None:
 def _parse_wa_message(raw: str) -> dict[str, Any]:
     try:
         data = json.loads(raw)
+
+        contacts: list[dict] = []
+        messages: list[dict] = []
+        try:
+            entry = (data.get("entry") or [{}])[0]
+            change = (entry.get("changes") or [{}])[0]
+            value = change.get("value") or {}
+            contacts = value.get("contacts") or []
+            messages = value.get("messages") or []
+        except Exception:
+            pass
+
         phone = (
-            data.get("phone")
+            (messages[0].get("from") if messages else "")
+            or data.get("phone")
             or data.get("from")
             or data.get("sender_id")
-            or data.get("contacts", [{}])[0].get("wa_id", "")
+            or (contacts[0].get("wa_id") if contacts else "")
         )
         name = (
-            data.get("name")
+            (contacts[0].get("profile", {}).get("name") if contacts else "")
+            or data.get("name")
             or data.get("profile", {}).get("name", "")
-            or data.get("contacts", [{}])[0].get("profile", {}).get("name", "")
             or ""
         )
         text = (
-            data.get("text")
+            (messages[0].get("text", {}).get("body") if messages else "")
+            or data.get("text")
             or data.get("body")
             or data.get("message", "")
-            or data.get("messages", [{}])[0].get("text", {}).get("body", "")
             or ""
         )
         return {"phone": phone, "name": name, "text": text}
