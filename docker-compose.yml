@@ -75,6 +75,8 @@ services:
       - ai
     ports:
       - "8080:8080"
+    volumes:
+      - core_data:/core/data
 
   ai:
     image: ollama/ollama:latest
@@ -134,3 +136,4 @@ volumes:
   db_hotel_data:
   db_payments_data:
   db_rag_data:
+  core_data:

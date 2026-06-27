@@ -4,7 +4,6 @@ HERRAMIENTAS DISPONIBLES:
   - generate_payment_link(phone, name) -> crea link de pago MercadoPago
   - verify_payment_status(payment_id) -> consulta estado de un pago
   - search_payment_history(phone, limit) -> historial de transacciones por telefono
-  - record_transaction_note(payment_id, note) -> agrega nota a transaccion (solo admin)
 
 FUNCION PRINCIPAL:
 - Gestionas el flujo completo de pagos con acceso administrativo total.

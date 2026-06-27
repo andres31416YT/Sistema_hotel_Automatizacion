@@ -34,13 +34,17 @@ async def fetch_all(query: str, params: list | None = None, connection: str = "h
 async def execute_dml(query: str, params: list | None = None, connection: str = "hotel") -> dict:
     """
     Execute INSERT/UPDATE/DELETE and return affected rows info.
+    DDL statements (DROP/ALTER/CREATE/TRUNCATE) are explicitly blocked.
     connection: "hotel" | "payments"
     """
+    normalized = query.strip().upper()
+    if normalized.startswith(("DROP ", "ALTER ", "CREATE ", "TRUNCATE ", "GRANT ", "REVOKE ")):
+        raise ValueError("DDL statements are not allowed: " + query[:60])
+
     dsn = settings.hotel_dsn if connection == "hotel" else settings.payments_dsn
     conn = await asyncpg.connect(dsn, timeout=15)
     try:
         result = await conn.execute(query, *(params or []))
-        # result is like "INSERT 0 1" or "UPDATE 5"
         parts = result.split()
         return {"status": parts[0], "count": int(parts[1]) if len(parts) > 1 else 0}
     except Exception as exc:
