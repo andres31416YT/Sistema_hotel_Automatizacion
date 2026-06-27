@@ -188,7 +188,7 @@ async def _worker_wa() -> None:
             }
 
             try:
-                reply = await asyncio.wait_for(graph.ainvoke(state), timeout=30.0)
+                reply = await asyncio.wait_for(graph.ainvoke(state), timeout=60.0)
                 final_msg = reply.get("final_message", "")
             except asyncio.TimeoutError:
                 logger.error("[WA WORKER] Timeout procesando %s", phone)
