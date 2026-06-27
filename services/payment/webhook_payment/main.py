@@ -72,8 +72,8 @@ async def mercadopago_webhook(request: Request):
     x_signature = request.headers.get("x-signature", "")
     x_request_id = request.headers.get("x-request-id", "")
 
-    # Validar firma si el secret esta configurado
-    if MP_WEBHOOK_SECRET:
+    # Validar firma si el secret esta configurado y no estamos en modo testing
+    if MP_WEBHOOK_SECRET and os.getenv("MP_SKIP_SIGNATURE_VALIDATION") != "true":
         if not x_signature:
             logger.warning("Webhook recibido sin header x-signature")
             raise HTTPException(status_code=403, detail="Firma requerida")
