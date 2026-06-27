@@ -5,6 +5,7 @@ import logging
 from typing import Any
 from lib.rag_interface import RAGBackend
 from lib.config import settings
+from lib.embeddings import _get_embedding
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,6 @@ class PgVectorBackend(RAGBackend):
         return await asyncpg.connect(self.dsn, timeout=15)
 
     async def ingest_document(self, text: str, metadata: dict[str, Any] | None = None) -> int:
-        from lib.rag import _get_embedding
         embedding = await _get_embedding(text)
         if not embedding:
             raise RuntimeError("Failed to generate embedding for document")
@@ -40,7 +40,6 @@ class PgVectorBackend(RAGBackend):
             await conn.close()
 
     async def search(self, query: str, limit: int = 3) -> list[dict[str, Any]]:
-        from lib.rag import _get_embedding
         embedding = await _get_embedding(query)
         if not embedding:
             logger.warning("Empty embedding for query in PgVector")

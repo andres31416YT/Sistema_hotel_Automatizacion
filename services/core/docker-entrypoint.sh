@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+mkdir -p /core/data
+
 eval "$(python3 - <<'PY'
 import sys
 from datetime import datetime
