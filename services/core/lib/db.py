@@ -1,10 +1,15 @@
 """Database access layer using asyncpg."""
 import asyncpg
 import logging
+import asyncio
 from typing import Any
 from lib.config import settings
 
 logger = logging.getLogger(__name__)
+
+HOTEL_SCHEMA_TEXT: str = ""
+HOTEL_SCHEMA_LOADED: bool = False
+HOTEL_SCHEMA_LOCK = asyncio.Lock()
 
 
 async def get_hotel_connection() -> asyncpg.Connection:
@@ -54,7 +59,7 @@ async def execute_dml(query: str, params: list | None = None, connection: str = 
         await conn.close()
 
 
-async def get_hotel_schema() -> dict[str, Any]:
+async def _fetch_schema_from_db() -> dict[str, Any]:
     """Read the live database schema from information_schema."""
     conn = await get_hotel_connection()
     try:
@@ -101,9 +106,12 @@ async def get_hotel_schema() -> dict[str, Any]:
         await conn.close()
 
 
+get_hotel_schema = _fetch_schema_from_db
+
+
 def schema_to_text(schema: dict) -> str:
     """Convert schema dict to readable text for prompts."""
-    lines = ["BASE DE DATOS DEL HOTEL:\n"]
+    lines = ["BASE DE DATOS DEL HOTEL (tablas y columnas exactas):\n"]
     for tn in sorted(schema):
         lines.append(f"Tabla: {tn}")
         for col in schema[tn]["columns"]:
@@ -112,3 +120,28 @@ def schema_to_text(schema: dict) -> str:
         for cons in schema[tn]["constraints"]:
             lines.append(f"  [FK] {cons['column']} -> {cons['foreign_table']}.{cons['foreign_column']}")
     return "\n".join(lines)
+
+
+async def load_hotel_schema(max_retries: int = 5) -> str:
+    """Load hotel schema with retries. Caches result globally. Returns empty string on failure."""
+    global HOTEL_SCHEMA_TEXT, HOTEL_SCHEMA_LOADED
+    if HOTEL_SCHEMA_LOADED:
+        return HOTEL_SCHEMA_TEXT
+    async with HOTEL_SCHEMA_LOCK:
+        if HOTEL_SCHEMA_LOADED:
+            return HOTEL_SCHEMA_TEXT
+        for attempt in range(1, max_retries + 1):
+            try:
+                schema = await _fetch_schema_from_db()
+                if schema:
+                    HOTEL_SCHEMA_TEXT = schema_to_text(schema)
+                    HOTEL_SCHEMA_LOADED = True
+                    logger.info("Hotel schema loaded (%d tables)", len(schema))
+                    return HOTEL_SCHEMA_TEXT
+            except Exception as exc:
+                logger.warning("Schema load attempt %d/%d failed: %s", attempt, max_retries, exc)
+            await asyncio.sleep(min(attempt * 2, 10))
+        HOTEL_SCHEMA_LOADED = True
+        HOTEL_SCHEMA_TEXT = ""
+        logger.error("Failed to load hotel schema after %d attempts", max_retries)
+        return ""

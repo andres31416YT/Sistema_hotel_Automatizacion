@@ -4,7 +4,7 @@ from langchain_core.tools import tool
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from lib.ollama import get_llm
-from lib.db import fetch_all, execute_dml, get_hotel_schema, schema_to_text
+from lib.db import fetch_all, execute_dml, get_hotel_schema, schema_to_text, HOTEL_SCHEMA_TEXT, HOTEL_SCHEMA_LOADED, load_hotel_schema
 from lib.datetime import get_current_datetime_block
 
 logger = logging.getLogger(__name__)
@@ -14,13 +14,12 @@ _hotel_schema_text = ""
 
 async def _ensure_schema():
     global _hotel_schema_text
-    if not _hotel_schema_text:
-        try:
-            schema = await get_hotel_schema()
-            _hotel_schema_text = schema_to_text(schema)
-        except Exception as exc:
-            logger.warning("Failed to load schema: %s", exc)
-            _hotel_schema_text = ""
+    if _hotel_schema_text:
+        return
+    if HOTEL_SCHEMA_LOADED and HOTEL_SCHEMA_TEXT:
+        _hotel_schema_text = HOTEL_SCHEMA_TEXT
+        return
+    _hotel_schema_text = await load_hotel_schema() or ""
 
 
 @tool
@@ -88,10 +87,17 @@ async def query_node(state: dict) -> dict:
     llm = get_llm(temperature=0.0).bind_tools(tools)
     prompt_text = _load_prompt(is_adm)
 
+    schema_block = f"\n\nESQUEMA DE BASE DE DATOS:\n{_hotel_schema_text}" if _hotel_schema_text else ""
+
     prompt = ChatPromptTemplate.from_messages([
         ("system", (
             f"{get_current_datetime_block()}\n\n"
             f"{prompt_text}"
+            f"{schema_block}\n\n"
+            "IMPORTANTE: Usa SOLO los nombres de tabla y columna que aparecen en el esquema anterior. "
+            "Si el usuario usa lenguaje natural (ej: 'habitaciones', 'reservas', 'huespedes'), "
+            "busca la tabla equivalente en el esquema (rooms, reservations, clients). "
+            "No inventes nombres de tablas."
         )),
         ("user", message),
     ])

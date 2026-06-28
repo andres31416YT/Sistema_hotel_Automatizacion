@@ -4,7 +4,7 @@ from langchain_core.tools import tool
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from lib.ollama import get_llm
-from lib.db import fetch_all, get_hotel_schema, schema_to_text
+from lib.db import fetch_all, get_hotel_schema, schema_to_text, HOTEL_SCHEMA_TEXT, HOTEL_SCHEMA_LOADED, load_hotel_schema
 from lib.datetime import get_current_datetime_block
 from lib.rag import search
 
@@ -15,13 +15,12 @@ _hotel_schema_text = ""
 
 async def _ensure_schema():
     global _hotel_schema_text
-    if not _hotel_schema_text:
-        try:
-            schema = await get_hotel_schema()
-            _hotel_schema_text = schema_to_text(schema)
-        except Exception as exc:
-            logger.warning("Failed to load schema: %s", exc)
-            _hotel_schema_text = ""
+    if _hotel_schema_text:
+        return
+    if HOTEL_SCHEMA_LOADED and HOTEL_SCHEMA_TEXT:
+        _hotel_schema_text = HOTEL_SCHEMA_TEXT
+        return
+    _hotel_schema_text = await load_hotel_schema() or ""
 
 
 @tool
@@ -88,14 +87,18 @@ async def knowledge_node(state: dict) -> dict:
     tools = [search_knowledge, get_db_schema, execute_sql]
     llm = get_llm(temperature=0.0).bind_tools(tools)
     prompt_text = _load_prompt(is_adm)
-    tone = "directo, técnico" if is_adm else "cálido, amable"
+    tone = "directo, tecnico" if is_adm else "calido, amable"
+
+    schema_block = f"\n\nESQUEMA DE BASE DE DATOS:\n{_hotel_schema_text}" if _hotel_schema_text else ""
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", (
             f"{get_current_datetime_block()}\n\n"
             f"{prompt_text}\n"
-            f"Responde con base en la información recuperada. Tono: {tone}. "
-            f"Si la información no está en los documentos, indícalo claramente."
+            f"Responde con base en la informacion recuperada. Tono: {tone}. "
+            f"Si la informacion no esta en los documentos, indicalo claramente."
+            f"{schema_block}\n\n"
+            "IMPORTANTE: Usa SOLO los nombres de tabla y columna que aparecen en el esquema anterior."
         )),
         ("user", f"Pregunta: {message}"),
     ])

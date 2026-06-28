@@ -228,8 +228,18 @@ async def _worker_wa() -> None:
 @app.on_event("startup")
 async def _launch_worker():
     get_admin_phones()
+    asyncio.create_task(_warm_schema())
     asyncio.create_task(_worker_wa())
     logger.info("[STARTUP] Worker WA lanzado")
+
+
+async def _warm_schema():
+    from lib.db import load_hotel_schema
+    schema_text = await load_hotel_schema()
+    if schema_text:
+        logger.info("[STARTUP] Schema warmed (%d chars)", len(schema_text))
+    else:
+        logger.warning("[STARTUP] Schema warm-up returned empty")
 
 
 def get_admin_phones() -> list[str]:
