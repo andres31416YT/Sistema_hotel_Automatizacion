@@ -6,7 +6,6 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 from lib.ollama import get_llm
 from lib.db import fetch_all, execute_dml, get_hotel_schema, schema_to_text, HOTEL_SCHEMA_TEXT, HOTEL_SCHEMA_LOADED, load_hotel_schema
-from lib.datetime import get_current_datetime_block
 from lib.security import sanitize_llm_response
 
 logger = logging.getLogger(__name__)
@@ -111,6 +110,60 @@ async def query_node(state: dict) -> dict:
     message = state.get("message", "")
     is_adm = state.get("is_admin", False)
 
+    lower_msg = message.lower()
+
+    rule_sql = None
+    if any(k in lower_msg for k in ["habitacion", "cuarto", "room"]):
+        rule_sql = (
+            "SELECT rooms.room_number AS numero, tipo_habitacion.nombre AS tipo, "
+            "estado_habitacion.nombre AS estado "
+            "FROM rooms "
+            "JOIN tipo_habitacion ON rooms.id_tipo_hab = tipo_habitacion.id "
+            "JOIN estado_habitacion ON rooms.id_estado_hab = estado_habitacion.id "
+            "ORDER BY rooms.room_number"
+        )
+    elif any(k in lower_msg for k in ["huesped", "cliente", "client"]):
+        rule_sql = "SELECT whatsapp_number, name, doc_identidad FROM clients ORDER BY id"
+    elif any(k in lower_msg for k in ["reserva", "booking", "reservation"]):
+        rule_sql = "SELECT id, client_id, room_id, check_in_date, check_out_date, total_amount FROM reservations ORDER BY id LIMIT 20"
+    elif any(k in lower_msg for k in ["pago", "payment", "transaccion"]):
+        rule_sql = "SELECT id, amount, status, created_at FROM payments ORDER BY created_at DESC LIMIT 20"
+
+    if rule_sql:
+        try:
+            rows = await fetch_all(rule_sql)
+            if rows:
+                cols = [c for c in rows[0].keys() if c != "id"]
+                lines = [f"{len(rows)} resultado(s):\n", " | ".join(cols), "|" + "|".join("---" for _ in cols)]
+                for row in rows[:50]:
+                    lines.append(" | ".join(str(row.get(c, "")) for c in cols))
+                sql_result = "\n".join(lines)
+            else:
+                sql_result = "La consulta se ejecutó correctamente pero no hay resultados."
+        except Exception as exc:
+            sql_result = f"Error en consulta SQL: {exc}"
+
+        lc_messages = [
+            SystemMessage(content=(
+                "IMPORTANTE: Los resultados de las herramientas son la UNICA fuente de informacion valida. "
+                "Tu respuesta debe basarse EXCLUSIVAMENTE en esos resultados. "
+                "NUNCA inventes datos, nunca uses conocimiento general, nunca describas entidades que no aparezcan en los resultados. "
+                "NUNCA muestres IDs numericos al administrador. Solo muestra nombres, codigos y descripciones. "
+                "Si hay filas, presenta ESAS filas tal cual vinieron (sin la columna id si aplica). "
+                "Si no hay resultados, di 'No se encontraron registros'. "
+                "No muestres SQL ni detalles tecnicos al usuario. "
+                "NUNCA uses tablas markdown con pipes (|). Usa listas con guiones simples. "
+                "NUNCA incluyas etiquetas como <environment_details>, <system>, <internal>, <meta>, "
+                "Working directory, Current time, Active file, zona horaria, UTC-5, o cualquier metadato del sistema. "
+                "NUNCA repitas fechas, horas ni zonas horarias en tu respuesta."
+            )),
+            HumanMessage(content=f"Resultados de la consulta:\n{sql_result}\n\nResponde al usuario con estos datos."),
+        ]
+        final_response = await llm.ainvoke(lc_messages)
+        final_response = getattr(final_response, "content", str(final_response))
+        logger.info("Query agent rule-based response (%d chars)", len(final_response))
+        return {"agent_response": final_response}
+
     tools = [execute_sql, get_db_schema]
     if is_adm:
         tools.append(execute_dml_tool)
@@ -139,23 +192,6 @@ async def query_node(state: dict) -> dict:
         ("user", message),
     ])
 
-    chain = prompt | llm
-    response = await chain.ainvoke({})
-    tool_calls = getattr(response, "tool_calls", None)
-
-    if not tool_calls:
-        retry_prompt = ChatPromptTemplate.from_messages([
-            ("system", (
-                "OLVIDA tu respuesta anterior. Ahora debes usar UNA herramienta para responder. "
-                "Elige execute_sql para consultar datos o get_db_schema para ver la estructura. "
-                "NO respondas con texto sin usar herramientas. "
-                "Responde SOLO con una llamada a herramienta."
-            )),
-            ("user", message),
-        ])
-        response = await (retry_prompt | llm).ainvoke({})
-        tool_calls = getattr(response, "tool_calls", None)
-
     tool_results: list[dict] = []
 
     if tool_calls:
@@ -175,6 +211,41 @@ async def query_node(state: dict) -> dict:
             except Exception as exc:
                 result = f"Error ejecutando {fn_name}: {exc}"
             tool_results.append({"tool": fn_name, "result": result})
+
+        schema_loaded = any(t["tool"] == "get_db_schema" for t in tool_results)
+        sql_executed = any(t["tool"] == "execute_sql" for t in tool_results)
+
+        if schema_loaded and not sql_executed:
+            schema_text = next((t["result"] for t in tool_results if t["tool"] == "get_db_schema"), "")
+            force_prompt = ChatPromptTemplate.from_messages([
+                ("system", (
+                    f"Esquema de base de datos:\n{schema_text}\n\n"
+                    "IMPORTANTE: Usa los nombres exactos de tabla y columna del esquema. "
+                    "El usuario pregunta sobre habitaciones. Ejecuta una consulta SELECT contra la tabla 'rooms' "
+                    "unida con 'tipo_habitacion' para mostrar numero, tipo y estado de cada habitacion. "
+                    "NO uses WHERE a menos que el usuario pida filtrar. "
+                    "NO inventes datos. Responde basandote SOLO en los resultados de execute_sql."
+                )),
+                ("user", message),
+            ])
+            force_response = await (force_prompt | llm).ainvoke({})
+            force_calls = getattr(force_response, "tool_calls", None)
+            if force_calls:
+                for tc in force_calls:
+                    fn_name = tc["name"]
+                    args = tc.get("args", {})
+                    logger.info("[QUERY] Forced tool call: %s args=%s", fn_name, args)
+                    try:
+                        if fn_name == "execute_sql":
+                            result = await execute_sql.ainvoke(args)
+                        elif fn_name == "execute_dml":
+                            result = await execute_dml_tool.ainvoke(args)
+                        else:
+                            result = f"Herramienta no esperada en forced: {fn_name}"
+                    except Exception as exc:
+                        result = f"Error ejecutando {fn_name}: {exc}"
+                    tool_results.append({"tool": fn_name, "result": result})
+                    tool_calls.append(tc)
 
         messages = [
             {"role": "system", "content": prompt.format_messages()[0].content},

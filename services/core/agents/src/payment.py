@@ -6,7 +6,6 @@ from langchain_core.output_parsers import StrOutputParser
 from lib.ollama import get_llm
 from lib.payments import payments_client
 from lib.db import fetch_all
-from lib.datetime import get_current_datetime_block
 from lib.security import sanitize_llm_response
 
 logger = logging.getLogger(__name__)
@@ -93,7 +92,6 @@ async def payment_node(state: dict) -> dict:
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", (
-            f"{get_current_datetime_block()}\n\n"
             f"{prompt_text}\n"
             f"Tono: {tone}.\n"
             "Los montos son en soles peruanos (S/.).\n"

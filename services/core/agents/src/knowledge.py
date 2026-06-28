@@ -5,7 +5,6 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from lib.ollama import get_llm
 from lib.db import fetch_all, get_hotel_schema, schema_to_text, HOTEL_SCHEMA_TEXT, HOTEL_SCHEMA_LOADED, load_hotel_schema
-from lib.datetime import get_current_datetime_block
 from lib.rag import search
 from lib.security import sanitize_llm_response
 
@@ -94,7 +93,6 @@ async def knowledge_node(state: dict) -> dict:
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", (
-            f"{get_current_datetime_block()}\n\n"
             f"{prompt_text}\n"
             f"Responde con base en la informacion recuperada. Tono: {tone}. "
             f"Si la informacion no esta en los documentos, indicalo claramente."

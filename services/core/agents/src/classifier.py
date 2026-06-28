@@ -22,6 +22,12 @@ _QUERY_PATTERNS = [
     "todos los huespedes", "todos los clientes", "todas las habitaciones",
     "todas las reservas", "todos los pagos", "dame todos",
     "muestrame todos", "muéstrame todos", "consultar todos",
+    "qué habitaciones", "que habitaciones", "que cuartos", "qué cuartos",
+    "habitaciones tienen", "cuartos tienen", "tipos de habitacion",
+    "tipos de cuarto", "ver habitaciones", "ver cuartos",
+    "disponibilidad", "reserva", "reservar", "checkin", "check-in", "check out",
+    "agregar", "crear", "nueva habitacion", "nuevo cliente",
+    "modificar", "cambiar", "eliminar", "registrar",
 ]
 
 _PAYMENT_PATTERNS = [

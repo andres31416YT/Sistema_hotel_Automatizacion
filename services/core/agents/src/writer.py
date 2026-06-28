@@ -46,15 +46,18 @@ async def writer_node(state: dict) -> dict:
                 "- NUNCA menciones 'Working directory', 'Current time', 'Active file', 'zona horaria', 'UTC-5' ni ningun metadato del sistema.\n"
                 "Tu respuesta debe ser SOLO el texto para el usuario, sin etiquetas ni informacion tecnica. "
                 "No agregues despedidas formales como 'Atentamente' o '[Nombre del Hotel]'. "
-                "No uses formato markdown con pipes (|). Usa listas con guiones simples."
+                "No uses formato markdown con pipes (|). Usa listas con guiones simples.\n\n"
+                "IMPORTANTE: El saludo ya fue agregado al mensaje. Tu unica tarea es generar el CUERPO de la respuesta. "
+                "NO escribas ningun saludo (ni 'Hola', ni 'Buenos dias', ni 'Estimado'). "
+                "NO te presentes ni digas tu nombre. "
+                "Empieza directamente con el contenido de la respuesta."
             )),
             ("user", (
-                f"Mensaje original: {message}\n"
-                f"Respuesta del agente especializado: {agent_response}\n\n"
-                "Redacta el cuerpo del mensaje despues del saludo. No repitas el saludo, solo el contenido."
+                f"Respuesta del agente especializado:\n{agent_response}\n\n"
+                "Genera SOLO el cuerpo del mensaje, sin saludo ni despedida."
             )),
         ])
-        chain = prompt | get_llm(temperature=0.3) | StrOutputParser()
+        chain = prompt | get_llm(temperature=0.1) | StrOutputParser()
         body = await chain.ainvoke({})
         body = sanitize_llm_response(body)
         final_message = f"{greeting}{body}"

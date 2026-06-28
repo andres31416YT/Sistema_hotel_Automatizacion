@@ -7,6 +7,7 @@ import asyncio
 from typing import Any
 
 import httpx
+import redis
 from fastapi import FastAPI
 from pydantic import BaseModel
 
@@ -48,14 +49,22 @@ def _parse_wa_message(raw: str) -> dict[str, Any]:
 
         contacts: list[dict] = []
         messages: list[dict] = []
-        try:
-            entry = (data.get("entry") or [{}])[0]
-            change = (entry.get("changes") or [{}])[0]
-            value = change.get("value") or {}
-            contacts = value.get("contacts") or []
-            messages = value.get("messages") or []
-        except Exception:
-            pass
+
+        def extract_value(obj: Any):
+            nonlocal contacts, messages
+            if isinstance(obj, dict):
+                if "contacts" in obj:
+                    contacts = obj.get("contacts") or contacts
+                if "messages" in obj:
+                    messages = obj.get("messages") or messages
+                for v in obj.values():
+                    extract_value(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    extract_value(item)
+
+        extract_value(data)
+        logger.info("[PARSE] contacts=%s messages=%s", contacts, messages)
 
         phone = (
             (messages[0].get("from") if messages else "")
@@ -132,7 +141,9 @@ async def _worker_wa() -> None:
             if result is None:
                 continue
             _, raw = result
+            logger.info("[WA WORKER] Raw message from Redis: %s", raw[:200])
             msg = _parse_wa_message(raw)
+            logger.info("[WA WORKER] Parsed message: %s", msg)
             if not msg or not msg.get("phone"):
                 logger.warning("[WA WORKER] Mensaje sin telefono, ignorado")
                 continue
@@ -191,6 +202,7 @@ async def _worker_wa() -> None:
             try:
                 reply = await asyncio.wait_for(graph.ainvoke(state), timeout=60.0)
                 final_msg = reply.get("final_message", "")
+                logger.info("[WA WORKER] Graph result for %s: intent=%s, final_msg_len=%d", phone, reply.get("intent", "?"), len(final_msg))
             except asyncio.TimeoutError:
                 logger.error("[WA WORKER] Timeout procesando %s", phone)
                 final_msg = "La consulta tardo demasiado. Intenta de nuevo mas tarde."
