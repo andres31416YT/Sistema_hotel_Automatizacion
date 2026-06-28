@@ -3,7 +3,7 @@ import logging
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from lib.ollama import get_llm
-from lib.datetime import get_current_datetime_block
+from lib.security import sanitize_llm_response
 
 logger = logging.getLogger(__name__)
 
@@ -30,22 +30,28 @@ async def general_node(state: dict) -> dict:
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", (
-            f"{get_current_datetime_block()}\n\n"
             "Eres el asistente virtual del hotel.\n"
             f"Contexto: {role_line}\n"
             "Comportate segun el rol del usuario:\n"
             "- Si es administrador: tono directo, profesional, sin saludos innecesarios.\n"
-            "- Si es huesped: tono cordial, usa su nombre si lo tienes.\n"
+            "- Si es huesped: tono cordial, amable, cercano. Saluda con su nombre si lo tienes.\n"
             "- Si es nuevo: se amigable, invitalo a conocer el hotel.\n"
             "Si pregunta sobre disponibilidad, sugiere consultar 'disponibilidad'.\n"
             "Si pregunta sobre pagos, sugiere consultar 'pago'.\n"
             "Si pregunta sobre informacion general, responde segun tu conocimiento del hotel.\n"
-            "No inventes reservas ni datos especificos."
+            "No inventes reservas ni datos especificos.\n\n"
+            "REGLAS DE RESPUESTA:\n"
+            "- NUNCA repitas fechas, horas, zonas horarias ni ningun dato de contexto temporal en tu respuesta.\n"
+            "- NUNCA incluyas etiquetas XML/HTML como <environment_details>, <system>, <internal>, <meta> ni similares.\n"
+            "- NUNCA menciones 'Working directory', 'Current time', 'Active file', 'zona horaria', 'UTC-5' ni ningun metadato del sistema.\n"
+            "Tu respuesta debe ser SOLO el texto para el usuario, sin etiquetas ni informacion tecnica. "
+            "No uses formato markdown con pipes (|). Usa listas con guiones simples."
         )),
         ("user", message),
     ])
 
     chain = prompt | get_llm(temperature=0.4) | StrOutputParser()
     response = await chain.ainvoke({})
+    response = sanitize_llm_response(response)
     logger.info("General node response (%d chars)", len(response))
     return {"agent_response": response}

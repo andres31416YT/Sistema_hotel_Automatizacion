@@ -1,5 +1,6 @@
 """Core service: FastAPI + LangGraph WhatsApp orchestrator."""
 import os
+import re
 import json
 import logging
 import asyncio
@@ -11,7 +12,7 @@ from pydantic import BaseModel
 
 from lib.config import settings
 from lib.redis_client import redis_client
-from lib.security import is_admin, validate_sender, validate_message_content, sanitize_name
+from lib.security import is_admin, validate_sender, validate_message_content, sanitize_name, sanitize_llm_response
 from agents.graph import build_customer_graph, build_admin_graph
 
 logging.basicConfig(level=logging.INFO)
@@ -80,32 +81,6 @@ def _parse_wa_message(raw: str) -> dict[str, Any]:
     except Exception as exc:
         logger.warning("parse_wa failed: %s | raw=%s", exc, raw[:200])
         return {}
-
-
-import re
-
-_SANITIZE_BLOCKS = [
-    r"<environment_details>[\s\S]*?</environment_details>",
-    r"<environment_details>.*",  
-    r"<system>[\s\S]*?</system>",
-    r"<internal>[\s\S]*?</internal>",
-    r"<meta>[\s\S]*?</meta>",
-    r"<\[.*?\]>[\s\S]*?<\/\[.*?\]>",
-    r"Current time:.*?\n",
-    r"Working directory:.*?\n",
-    r"Workspace root folder:.*?\n",
-    r"Active file:.*?\n",
-    r"Visible files:.*?\n",
-]
-
-
-def _sanitize_response(text: str) -> str:
-    cleaned = text
-    for pattern in _SANITIZE_BLOCKS:
-        cleaned = re.sub(pattern, "", cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r"<[^>]+>", "", cleaned)
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-    return cleaned.strip()
 
 
 def _detect_payment_intent(text: str) -> bool:
@@ -226,7 +201,27 @@ async def _worker_wa() -> None:
             if payment_note:
                 final_msg = f"{payment_note}\n\n{final_msg}" if final_msg else payment_note
 
-            final_msg = _sanitize_response(final_msg)
+            final_msg = sanitize_llm_response(final_msg)
+
+            final_msg = re.sub(r"<environment_details>.*?</environment_details>", "", final_msg, flags=re.DOTALL)
+            final_msg = re.sub(r"<environment_details>.*", "", final_msg, flags=re.DOTALL)
+            final_msg = re.sub(r"<system>.*?</system>", "", final_msg, flags=re.DOTALL)
+            final_msg = re.sub(r"<internal>.*?</internal>", "", final_msg, flags=re.DOTALL)
+            final_msg = re.sub(r"<meta>.*?</meta>", "", final_msg, flags=re.DOTALL)
+            final_msg = re.sub(r"<[^>]+>", "", final_msg)
+            final_msg = re.sub(r"Current time:.*?\n", "", final_msg)
+            final_msg = re.sub(r"Working directory:.*?\n", "", final_msg)
+            final_msg = re.sub(r"Workspace root folder:.*?\n", "", final_msg)
+            final_msg = re.sub(r"Active file:.*?\n", "", final_msg)
+            final_msg = re.sub(r"Visible files:.*?\n", "", final_msg)
+            final_msg = re.sub(r"FECHA Y HORA ACTUAL.*?\n.*?\n.*?\n.*?\n", "", final_msg, flags=re.DOTALL)
+            final_msg = re.sub(r"zona horaria Perú.*?\n", "", final_msg)
+            final_msg = re.sub(r"UTC-5.*?\n", "", final_msg)
+            final_msg = re.sub(r"Ten en cuenta que la fecha actual.*?\n", "", final_msg)
+            final_msg = re.sub(r"\n{3,}", "\n\n", final_msg).strip()
+
+            if "<environment_details>" in final_msg or "Current time" in final_msg:
+                logger.error("[SANITIZE LEAK] STILL PRESENT after all passes! phone=%s preview=%s", phone, final_msg[:400].replace('\n', ' '))
 
             logger.info("[WA WORKER] Reply a %s (%d chars): %s", phone, len(final_msg), final_msg)
             await _send_wa_message(phone, final_msg)

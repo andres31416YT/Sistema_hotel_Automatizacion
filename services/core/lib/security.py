@@ -6,6 +6,48 @@ from lib.config import settings
 logger = logging.getLogger(__name__)
 
 
+_SANITIZE_BLOCKS = [
+    r"<environment_details>[\s\S]*?</environment_details>",
+    r"<environment_details>[\s\S]*",
+    r"<system>[\s\S]*?</system>",
+    r"<internal>[\s\S]*?</internal>",
+    r"<meta>[\s\S]*?</meta>",
+    r"<\[.*?\]>[\s\S]*?<\/\[.*?\]>",
+    r"Current time:.*",
+    r"Working directory:.*",
+    r"Workspace root folder:.*",
+    r"Active file:.*",
+    r"Visible files:.*",
+    r"<environment_details>",
+    r"</environment_details>",
+    r"<thinking>[\s\S]*?</thinking>",
+    r"<reasoning>[\s\S]*?</reasoning>",
+    r"<scratchpad>[\s\S]*?</scratchpad>",
+    r"\[Internal thinking.*?\n",
+    r"\[System note.*?\n",
+    r"<[^>]+>",
+    r"FECHA Y HORA ACTUAL.*?\n.*?\n.*?\n.*?\n",
+    r"zona horaria Perú.*?\n",
+    r"UTC-5.*?\n",
+    r"Ten en cuenta que la fecha actual.*?\n",
+    r"la hora es \d{1,2}:\d{2}.*?\n",
+    r"27 de junio.*?\n",
+]
+
+
+def sanitize_llm_response(text: str) -> str:
+    original = text
+    cleaned = text
+    for pattern in _SANITIZE_BLOCKS:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    result = cleaned.strip()
+    if result != original:
+        logger.warning("[SANITIZE] Response was sanitized (original=%d chars, final=%d chars)", len(original), len(result))
+        logger.warning("[SANITIZE] Removed content preview: %s", original[:400].replace('\n', ' '))
+    return result
+
+
 def is_admin(phone: str) -> bool:
     """Check if a WhatsApp phone number belongs to an administrator."""
     if not phone or not isinstance(phone, str):
@@ -18,21 +60,20 @@ def is_admin(phone: str) -> bool:
 
 
 def sanitize_name(name: str) -> str:
-    """Sanitize a name from WhatsApp profile to avoid corrupted/truncated names."""
+    """Sanitize a name from WhatsApp profile or DB.
+    Keeps the original text but removes only truly broken characters.
+    """
     if not name or not isinstance(name, str):
-        return "Usuario"
+        return ""
     cleaned = name.strip()
     if not cleaned:
-        return "Usuario"
+        return ""
     if len(cleaned) < 2:
-        return "Usuario"
-    suspicious = ["non", "null", "undefined", "none", "test", "spam"]
-    if cleaned.lower() in suspicious:
-        return "Usuario"
+        return ""
     cleaned = re.sub(r'[^\w\s\-\.]', '', cleaned)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     if len(cleaned) < 2:
-        return "Usuario"
+        return ""
     return cleaned
 
 

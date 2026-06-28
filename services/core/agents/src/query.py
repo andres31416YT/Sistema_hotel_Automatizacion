@@ -7,6 +7,7 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, Tool
 from lib.ollama import get_llm
 from lib.db import fetch_all, execute_dml, get_hotel_schema, schema_to_text, HOTEL_SCHEMA_TEXT, HOTEL_SCHEMA_LOADED, load_hotel_schema
 from lib.datetime import get_current_datetime_block
+from lib.security import sanitize_llm_response
 
 logger = logging.getLogger(__name__)
 
@@ -43,15 +44,8 @@ def _detect_catalog_tables() -> set[str]:
 
 
 def _should_exclude_id(query: str) -> bool:
-    global CATALOG_TABLES
-    if not CATALOG_TABLES:
-        CATALOG_TABLES = _detect_catalog_tables()
-    q = query.strip().upper()
-    for tbl in CATALOG_TABLES:
-        if f"FROM {tbl}" in q or f"FROM {tbl.upper()}" in q:
-            logger.info("[ID_EXCLUDE] Excluding id for table: %s (query: %s)", tbl, q[:60])
-            return True
-    return False
+    """Exclude 'id' column from SELECT results for ALL tables."""
+    return True
 
 
 @tool
@@ -68,7 +62,9 @@ async def execute_sql(query: str) -> str:
         lines = [f"{len(rows)} resultado(s):\n", " | ".join(cols), "|" + "|".join("---" for _ in cols)]
         for row in rows[:50]:
             lines.append(" | ".join(str(row.get(c, "")) for c in cols))
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        logger.info("[EXECUTE_SQL] query=%s | rows=%d | exclude_id=%s | result_preview=%s", query[:80], len(rows), exclude_id, result[:200])
+        return result
     except Exception as exc:
         return f"Error en consulta SQL: {exc}"
 
@@ -126,7 +122,6 @@ async def query_node(state: dict) -> dict:
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", (
-            f"{get_current_datetime_block()}\n\n"
             f"{prompt_text}"
             f"{schema_block}\n\n"
             "IMPORTANTE: Usa SOLO los nombres de tabla y columna que aparecen en el esquema anterior. "
@@ -138,7 +133,8 @@ async def query_node(state: dict) -> dict:
             "El administrador/usuario no necesita ver IDs internos.\n"
             "- Si una tabla tiene columna 'codigo', usa 'codigo', 'nombre', 'descripcion', 'capacidad', etc. "
             "en lugar de 'id'.\n"
-            "- Para consultas de insercion (INSERT), tu mismo conviertes los nombres a IDs usando los catalogos."
+            "- Para consultas de insercion (INSERT), tu mismo conviertes los nombres a IDs usando los catalogos.\n"
+            "- NUNCA repitas fechas, horas ni zonas horarias en tu respuesta."
         )),
         ("user", message),
     ])
@@ -217,10 +213,12 @@ async def query_node(state: dict) -> dict:
             "Si hay filas, presenta ESAS filas tal cual vinieron (sin la columna id si aplica). "
             "Si no hay resultados, di 'No se encontraron registros'. "
             "No muestres SQL ni detalles tecnicos al usuario. "
-            "NUNCA uses tablas markdown con pipes (|). Usa listas con guiones simples."
+            "NUNCA uses tablas markdown con pipes (|). Usa listas con guiones simples. "
+            "NUNCA incluyas etiquetas como <environment_details>, <system>, <internal>, <meta>, "
+            "Working directory, Current time, Active file, zona horaria, UTC-5, o cualquier metadato del sistema. "
+            "NUNCA repitas fechas, horas ni zonas horarias en tu respuesta."
             f"{tables_context}"
         )))
-
         final_response = await llm.ainvoke(lc_messages)
         final_response = getattr(final_response, "content", str(final_response))
     else:
@@ -231,4 +229,5 @@ async def query_node(state: dict) -> dict:
             final_response = getattr(response, "content", "") or "No pude procesar esa consulta."
 
     logger.info("Query agent response (%d chars)", len(final_response))
+    final_response = sanitize_llm_response(final_response)
     return {"agent_response": final_response}

@@ -7,6 +7,7 @@ from lib.ollama import get_llm
 from lib.payments import payments_client
 from lib.db import fetch_all
 from lib.datetime import get_current_datetime_block
+from lib.security import sanitize_llm_response
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,12 @@ async def payment_node(state: dict) -> dict:
             messages.append({"role": "tool", "tool_call_id": tr["tool"], "content": tr["result"]})
 
         final_prompt = ChatPromptTemplate.from_messages([
-            ("system", "Con los resultados de las herramientas anteriores, responde al usuario de forma clara y concisa. No muestres SQL ni detalles técnicos."),
+            ("system", (
+                "Con los resultados de las herramientas anteriores, responde al usuario de forma clara y concisa. "
+                "No muestres SQL ni detalles técnicos. "
+                "NUNCA incluyas etiquetas como <environment_details>, <system>, <internal>, <meta>, "
+                "Working directory, Current time, Active file, o cualquier metadato del sistema."
+            )),
             ("user", f"Resultados:\n{chr(10).join(t['result'] for t in tool_results)}"),
         ])
         final_chain = final_prompt | get_llm(temperature=0.1) | StrOutputParser()
@@ -144,4 +150,5 @@ async def payment_node(state: dict) -> dict:
         final_response = getattr(response, "content", "") or "No pude procesar esa consulta."
 
     logger.info("Payment agent response (%d chars)", len(final_response))
+    final_response = sanitize_llm_response(final_response)
     return {"agent_response": final_response}
