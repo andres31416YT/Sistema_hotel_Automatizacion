@@ -3,6 +3,7 @@ import logging
 from langchain_core.tools import tool
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 from lib.ollama import get_llm
 from lib.db import fetch_all, execute_dml, get_hotel_schema, schema_to_text, HOTEL_SCHEMA_TEXT, HOTEL_SCHEMA_LOADED, load_hotel_schema
 from lib.datetime import get_current_datetime_block
@@ -27,6 +28,7 @@ CATALOG_TABLES: set[str] = set()
 
 def _detect_catalog_tables() -> set[str]:
     if not _hotel_schema_text:
+        logger.warning("[CATALOG_DETECT] Schema text is empty")
         return set()
     tables: set[str] = set()
     current_table = ""
@@ -34,8 +36,9 @@ def _detect_catalog_tables() -> set[str]:
         stripped = line.strip()
         if stripped.startswith("Tabla: "):
             current_table = stripped.split(": ", 1)[1].strip().lower()
-        if "  codigo:" in stripped and current_table:
+        if "codigo:" in stripped and current_table:
             tables.add(current_table)
+    logger.info("[CATALOG_DETECT] Detected catalog tables: %s", tables)
     return tables
 
 
@@ -46,6 +49,7 @@ def _should_exclude_id(query: str) -> bool:
     q = query.strip().upper()
     for tbl in CATALOG_TABLES:
         if f"FROM {tbl}" in q or f"FROM {tbl.upper()}" in q:
+            logger.info("[ID_EXCLUDE] Excluding id for table: %s (query: %s)", tbl, q[:60])
             return True
     return False
 
@@ -57,7 +61,8 @@ async def execute_sql(query: str) -> str:
         rows = await fetch_all(query)
         if not rows:
             return "La consulta se ejecutó correctamente pero no hay resultados."
-        cols = [c for c in rows[0].keys() if c != "id"] if _should_exclude_id(query) else list(rows[0].keys())
+        exclude_id = _should_exclude_id(query)
+        cols = [c for c in rows[0].keys() if not (exclude_id and c == "id")]
         if not cols:
             cols = list(rows[0].keys())
         lines = [f"{len(rows)} resultado(s):\n", " | ".join(cols), "|" + "|".join("---" for _ in cols)]
@@ -127,7 +132,13 @@ async def query_node(state: dict) -> dict:
             "IMPORTANTE: Usa SOLO los nombres de tabla y columna que aparecen en el esquema anterior. "
             "Si el usuario usa lenguaje natural (ej: 'habitaciones', 'reservas', 'huespedes'), "
             "busca la tabla equivalente en el esquema (rooms, reservations, clients). "
-            "No inventes nombres de tablas."
+            "No inventes nombres de tablas.\n\n"
+            "REGLAS DE CONSULTA:\n"
+            "- NUNCA incluyas la columna 'id' en consultas SELECT sobre tablas de catalogo (las que tienen columna 'codigo'). "
+            "El administrador/usuario no necesita ver IDs internos.\n"
+            "- Si una tabla tiene columna 'codigo', usa 'codigo', 'nombre', 'descripcion', 'capacidad', etc. "
+            "en lugar de 'id'.\n"
+            "- Para consultas de insercion (INSERT), tu mismo conviertes los nombres a IDs usando los catalogos."
         )),
         ("user", message),
     ])
@@ -135,6 +146,20 @@ async def query_node(state: dict) -> dict:
     chain = prompt | llm
     response = await chain.ainvoke({})
     tool_calls = getattr(response, "tool_calls", None)
+
+    if not tool_calls:
+        retry_prompt = ChatPromptTemplate.from_messages([
+            ("system", (
+                "OLVIDA tu respuesta anterior. Ahora debes usar UNA herramienta para responder. "
+                "Elige execute_sql para consultar datos o get_db_schema para ver la estructura. "
+                "NO respondas con texto sin usar herramientas. "
+                "Responde SOLO con una llamada a herramienta."
+            )),
+            ("user", message),
+        ])
+        response = await (retry_prompt | llm).ainvoke({})
+        tool_calls = getattr(response, "tool_calls", None)
+
     tool_results: list[dict] = []
 
     if tool_calls:
@@ -177,23 +202,33 @@ async def query_node(state: dict) -> dict:
         if consulted_tables:
             tables_context = f" Las tablas consultadas fueron: {', '.join(consulted_tables)}."
 
-        final_prompt = ChatPromptTemplate.from_messages([
-            ("system", (
-                "IMPORTANTE: Los resultados de las herramientas son la UNICA fuente de informacion valida. "
-                "Tu respuesta debe basarse EXCLUSIVAMENTE en esos resultados. "
-                "NUNCA inventes datos, nunca uses conocimiento general, nunca describas entidades que no aparezcan en los resultados. "
-                "NUNCA muestres IDs numericos al administrador. Solo muestra nombres, codigos y descripciones. "
-                "Si hay filas, presenta ESAS filas tal cual vinieron (sin la columna id si aplica). "
-                "Si no hay resultados, di 'No se encontraron registros'. "
-                "No muestres SQL ni detalles tecnicos al usuario."
-                f"{tables_context}"
-            )),
-            ("user", f"Resultados de la consulta:\n{chr(10).join(t['result'] for t in tool_results)}\n\nResponde al usuario con estos datos."),
-        ])
-        final_chain = final_prompt | get_llm(temperature=0.1) | StrOutputParser()
-        final_response = await final_chain.ainvoke({})
+        lc_messages = [
+            SystemMessage(content=prompt.format_messages()[0].content),
+            HumanMessage(content=message),
+            AIMessage(content="", tool_calls=tool_calls),
+        ]
+        for tr in tool_results:
+            lc_messages.append(ToolMessage(content=tr["result"], tool_call_id=tr["tool"]))
+        lc_messages.append(SystemMessage(content=(
+            "IMPORTANTE: Los resultados de las herramientas son la UNICA fuente de informacion valida. "
+            "Tu respuesta debe basarse EXCLUSIVAMENTE en esos resultados. "
+            "NUNCA inventes datos, nunca uses conocimiento general, nunca describas entidades que no aparezcan en los resultados. "
+            "NUNCA muestres IDs numericos al administrador. Solo muestra nombres, codigos y descripciones. "
+            "Si hay filas, presenta ESAS filas tal cual vinieron (sin la columna id si aplica). "
+            "Si no hay resultados, di 'No se encontraron registros'. "
+            "No muestres SQL ni detalles tecnicos al usuario. "
+            "NUNCA uses tablas markdown con pipes (|). Usa listas con guiones simples."
+            f"{tables_context}"
+        )))
+
+        final_response = await llm.ainvoke(lc_messages)
+        final_response = getattr(final_response, "content", str(final_response))
     else:
-        final_response = getattr(response, "content", "") or "No pude procesar esa consulta."
+        if not tool_calls:
+            logger.warning("[QUERY] No tool calls made after retry, returning safe fallback")
+            final_response = "No pude procesar esa consulta. Por favor, intenta de nuevo."
+        else:
+            final_response = getattr(response, "content", "") or "No pude procesar esa consulta."
 
     logger.info("Query agent response (%d chars)", len(final_response))
     return {"agent_response": final_response}

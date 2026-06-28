@@ -23,11 +23,20 @@ async def classify_intent(state: dict) -> dict:
     prompt = ChatPromptTemplate.from_messages([
         ("system", (
             "Eres un clasificador de intenciones para un asistente de hotel.\n"
-            "Clasifica el mensaje del usuario en UNA de estas categorías:\n"
-            "- query: consulta sobre disponibilidad, reservas, habitaciones, datos operativos\n"
-            "- knowledge: pregunta sobre políticas, horarios, servicios, reglas del hotel\n"
-            "- payment: solicitud de pago, link de pago, estado de pago\n"
-            "- general: saludo, ayuda, otro\n\n"
+            "Clasifica el mensaje del usuario en UNA de estas categorías:\n\n"
+            "- query: consulta o modificacion sobre datos del hotel en la base de datos. "
+            "Incluye: consultar disponibilidad, reservas, habitaciones, clientes, "
+            "agregar/crear/registrar nuevos datos (habitaciones, reservas, clientes), "
+            "modificar o actualizar datos existentes, eliminar registros, "
+            "cambiar estados, check-in, check-out, ver historiales, datos operativos.\n\n"
+            "- knowledge: pregunta sobre políticas, horarios, servicios, reglas del hotel, "
+            "información general que no requiere acceder a la base de datos.\n\n"
+            "- payment: solicitud de pago, link de pago, estado de pago, "
+            "generar cobro, consultar transacciones, mercadopago, yape, plin.\n\n"
+            "- general: saludo, ayuda, conversación casual, presentación, "
+            "pregunta quién eres, qué puedes hacer.\n\n"
+            "Regla: Si el usuario menciona 'agregar', 'crear', 'nueva habitacion', "
+            "'nuevo cliente', 'modificar', 'cambiar', 'eliminar' -> siempre es 'query'.\n\n"
             "Devuelve SOLO la categoría, sin explicaciones."
         )),
         ("user", f"Mensaje: {message}\nContexto reciente:\n{context}\n\nCategoría:"),
