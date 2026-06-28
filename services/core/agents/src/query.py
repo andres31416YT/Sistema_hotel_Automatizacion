@@ -22,6 +22,34 @@ async def _ensure_schema():
     _hotel_schema_text = await load_hotel_schema() or ""
 
 
+CATALOG_TABLES: set[str] = set()
+
+
+def _detect_catalog_tables() -> set[str]:
+    if not _hotel_schema_text:
+        return set()
+    tables: set[str] = set()
+    current_table = ""
+    for line in _hotel_schema_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Tabla: "):
+            current_table = stripped.split(": ", 1)[1].strip().lower()
+        if "  codigo:" in stripped and current_table:
+            tables.add(current_table)
+    return tables
+
+
+def _should_exclude_id(query: str) -> bool:
+    global CATALOG_TABLES
+    if not CATALOG_TABLES:
+        CATALOG_TABLES = _detect_catalog_tables()
+    q = query.strip().upper()
+    for tbl in CATALOG_TABLES:
+        if f"FROM {tbl}" in q or f"FROM {tbl.upper()}" in q:
+            return True
+    return False
+
+
 @tool
 async def execute_sql(query: str) -> str:
     """Execute a read-only SQL query against the hotel database (SELECT, SHOW, WITH)."""
@@ -29,7 +57,9 @@ async def execute_sql(query: str) -> str:
         rows = await fetch_all(query)
         if not rows:
             return "La consulta se ejecutó correctamente pero no hay resultados."
-        cols = list(rows[0].keys())
+        cols = [c for c in rows[0].keys() if c != "id"] if _should_exclude_id(query) else list(rows[0].keys())
+        if not cols:
+            cols = list(rows[0].keys())
         lines = [f"{len(rows)} resultado(s):\n", " | ".join(cols), "|" + "|".join("---" for _ in cols)]
         for row in rows[:50]:
             lines.append(" | ".join(str(row.get(c, "")) for c in cols))
@@ -152,7 +182,8 @@ async def query_node(state: dict) -> dict:
                 "IMPORTANTE: Los resultados de las herramientas son la UNICA fuente de informacion valida. "
                 "Tu respuesta debe basarse EXCLUSIVAMENTE en esos resultados. "
                 "NUNCA inventes datos, nunca uses conocimiento general, nunca describas entidades que no aparezcan en los resultados. "
-                "Si hay filas, presenta ESAS filas tal cual vinieron. "
+                "NUNCA muestres IDs numericos al administrador. Solo muestra nombres, codigos y descripciones. "
+                "Si hay filas, presenta ESAS filas tal cual vinieron (sin la columna id si aplica). "
                 "Si no hay resultados, di 'No se encontraron registros'. "
                 "No muestres SQL ni detalles tecnicos al usuario."
                 f"{tables_context}"
