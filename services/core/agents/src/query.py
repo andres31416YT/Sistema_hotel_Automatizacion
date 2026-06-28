@@ -133,9 +133,31 @@ async def query_node(state: dict) -> dict:
         for tr in tool_results:
             messages.append({"role": "tool", "tool_call_id": tr["tool"], "content": tr["result"]})
 
+        consulted_tables = []
+        for tc in tool_calls:
+            query = tc.get("args", {}).get("query", "")
+            if query:
+                words = query.strip().upper().split()
+                if "FROM" in words:
+                    idx = words.index("FROM")
+                    if idx + 1 < len(words):
+                        consulted_tables.append(words[idx + 1].rstrip(";").lower())
+
+        tables_context = ""
+        if consulted_tables:
+            tables_context = f" Las tablas consultadas fueron: {', '.join(consulted_tables)}."
+
         final_prompt = ChatPromptTemplate.from_messages([
-            ("system", "Con los resultados de las herramientas anteriores, responde al usuario de forma clara y concisa. No muestres SQL ni detalles técnicos."),
-            ("user", f"Resultados:\n{chr(10).join(t['result'] for t in tool_results)}"),
+            ("system", (
+                "IMPORTANTE: Los resultados de las herramientas son la UNICA fuente de informacion valida. "
+                "Tu respuesta debe basarse EXCLUSIVAMENTE en esos resultados. "
+                "NUNCA inventes datos, nunca uses conocimiento general, nunca describas entidades que no aparezcan en los resultados. "
+                "Si hay filas, presenta ESAS filas tal cual vinieron. "
+                "Si no hay resultados, di 'No se encontraron registros'. "
+                "No muestres SQL ni detalles tecnicos al usuario."
+                f"{tables_context}"
+            )),
+            ("user", f"Resultados de la consulta:\n{chr(10).join(t['result'] for t in tool_results)}\n\nResponde al usuario con estos datos."),
         ])
         final_chain = final_prompt | get_llm(temperature=0.1) | StrOutputParser()
         final_response = await final_chain.ainvoke({})
