@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from lib.config import settings
 from lib.redis_client import redis_client
-from lib.security import is_admin, validate_sender, validate_message_content
+from lib.security import is_admin, validate_sender, validate_message_content, sanitize_name
 from agents.graph import build_customer_graph, build_admin_graph
 
 logging.basicConfig(level=logging.INFO)
@@ -76,7 +76,7 @@ def _parse_wa_message(raw: str) -> dict[str, Any]:
             or data.get("message", "")
             or ""
         )
-        return {"phone": phone, "name": name, "text": text}
+        return {"phone": phone, "name": sanitize_name(name), "text": text}
     except Exception as exc:
         logger.warning("parse_wa failed: %s | raw=%s", exc, raw[:200])
         return {}
@@ -233,4 +233,6 @@ async def _launch_worker():
 
 
 def get_admin_phones() -> list[str]:
-    return settings.admin_phones_list
+    phones = settings.admin_phones_list
+    logger.info("[STARTUP] Admin phones loaded: %s (count=%d)", phones, len(phones))
+    return phones

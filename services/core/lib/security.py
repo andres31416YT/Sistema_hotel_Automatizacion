@@ -1,5 +1,6 @@
 """Security and authentication utilities."""
 import logging
+import re
 from lib.config import settings
 
 logger = logging.getLogger(__name__)
@@ -9,7 +10,30 @@ def is_admin(phone: str) -> bool:
     """Check if a WhatsApp phone number belongs to an administrator."""
     if not phone or not isinstance(phone, str):
         return False
-    return phone.strip() in settings.admin_phones_list
+    cleaned = phone.strip()
+    admin_list = settings.admin_phones_list
+    result = cleaned in admin_list
+    logger.info("[ADMIN_CHECK] phone=%s admin_list=%s is_admin=%s", cleaned, admin_list, result)
+    return result
+
+
+def sanitize_name(name: str) -> str:
+    """Sanitize a name from WhatsApp profile to avoid corrupted/truncated names."""
+    if not name or not isinstance(name, str):
+        return "Usuario"
+    cleaned = name.strip()
+    if not cleaned:
+        return "Usuario"
+    if len(cleaned) < 2:
+        return "Usuario"
+    suspicious = ["non", "null", "undefined", "none", "test", "spam"]
+    if cleaned.lower() in suspicious:
+        return "Usuario"
+    cleaned = re.sub(r'[^\w\s\-\.]', '', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    if len(cleaned) < 2:
+        return "Usuario"
+    return cleaned
 
 
 def validate_sender(sender_id: str) -> bool:

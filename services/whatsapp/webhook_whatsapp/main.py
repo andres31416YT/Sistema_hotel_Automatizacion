@@ -69,8 +69,8 @@ async def whatsapp_webhook(
     # Log truncated without PII
     logger.info(f"Received webhook payload ({len(body)} bytes) — signature_ok={bool(x_hub_signature_256)}")
     
-    # Verify the signature if we have a secret
-    if WHATSAPP_APP_SECRET:
+    # Verify the signature if we have a secret and not in testing mode
+    if WHATSAPP_APP_SECRET and os.getenv("WA_SKIP_SIGNATURE_VALIDATION") != "true":
         # Calculate expected signature
         expected_signature = "sha256=" + hmac.new(
             WHATSAPP_APP_SECRET.encode('utf-8'),

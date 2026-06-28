@@ -1,6 +1,7 @@
 """Identifier agent node: identify the sender and build context."""
 import logging
 from lib.db import get_hotel_connection
+from lib.security import sanitize_name
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ async def identifier_node(state: dict) -> dict:
             if row:
                 sender_info.update({
                     "client_id": row["id"],
-                    "name": row["name"] or name,
+                    "name": sanitize_name(row["name"] or name),
                     "doc_identidad": row["doc_identidad"],
                     "is_existing_client": True,
                     "created_at": str(row["created_at"]),
@@ -38,11 +39,11 @@ async def identifier_node(state: dict) -> dict:
                     new_row = await conn.fetchrow(
                         "INSERT INTO clients (whatsapp_number, name) VALUES ($1, $2) RETURNING id, name, created_at",
                         phone,
-                        name or "Usuario",
+                        sanitize_name(name or "Usuario"),
                     )
                     if new_row:
                         sender_info["client_id"] = new_row["id"]
-                        sender_info["name"] = new_row["name"]
+                        sender_info["name"] = sanitize_name(new_row["name"])
                         sender_info["created_at"] = str(new_row["created_at"])
                         sender_info["is_existing_client"] = False
                         sender_info["is_new_user"] = True

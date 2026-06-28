@@ -1,10 +1,13 @@
 """Configuration management using Pydantic Settings."""
 import os
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_env_path = str(Path(__file__).resolve().parent.parent / ".env")
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=_env_path, extra="ignore")
 
     # Ollama
     ollama_api_url: str = "http://ollama:11434"
@@ -84,7 +87,7 @@ class Settings(BaseSettings):
 
     @property
     def admin_phones_list(self) -> list[str]:
-        raw = os.getenv("ADMIN_PHONES", self.admin_phones)
+        raw = os.getenv("ADMIN_PHONES") or self.admin_phones or ""
         return [p.strip() for p in raw.split(",") if p.strip()]
 
 
