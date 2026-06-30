@@ -9,9 +9,7 @@ import asyncio
 from typing import Any
 
 import httpx
-import redis
 from fastapi import FastAPI, Request, HTTPException
-from pydantic import BaseModel
 
 from lib.config import settings
 from lib.redis_client import redis_client
@@ -27,14 +25,12 @@ customer_graph = build_customer_graph()
 admin_graph = build_admin_graph()
 
 
-# ── Root ──────────────────────────────────────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
-@app.get("/")
-async def root():
-    return {"service": "core", "status": "running", "port": settings.core_port}
+def _get_openwa_session_id() -> str:
+    """Return the effective OpenWA session identifier (UUID preferred, fallback to name)."""
+    return settings.openwa_session_uuid or settings.openwa_session_id
 
-
-# ── OpenWA helpers ────────────────────────────────────────────────────────────
 
 def _normalize_chat_id(phone: str) -> str:
     digits = re.sub(r'\D', '', phone or '')
@@ -45,7 +41,8 @@ def _normalize_chat_id(phone: str) -> str:
 
 async def _send_wa_message(to: str, text: str) -> None:
     chat_id = _normalize_chat_id(to)
-    url = f"{settings.openwa_api_url}/api/sessions/{settings.openwa_session_id}/messages/send-text"
+    session_id = _get_openwa_session_id()
+    url = f"{settings.openwa_api_url}/api/sessions/{session_id}/messages/send-text"
     payload = {"chatId": chat_id, "text": text}
     headers = {"Content-Type": "application/json"}
     if settings.openwa_api_key:
@@ -73,11 +70,11 @@ async def _setup_openwa() -> None:
                 logger.info("[OPENWA] Session ensured: %s", settings.openwa_session_id)
         except Exception as exc:
             logger.error("[OPENWA] Session setup failed: %s", exc)
-            return
 
 
 async def _poll_openwa() -> None:
     logger.info("[OPENWA POLL] Iniciado")
+    session_id = _get_openwa_session_id()
     last_ts_key = f"openwa_last_timestamp:{settings.openwa_session_id}"
     while True:
         try:
@@ -88,10 +85,14 @@ async def _poll_openwa() -> None:
 
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(
-                    f"{base}/api/sessions/{settings.openwa_session_id}/messages",
+                    f"{base}/api/sessions/{session_id}/messages",
                     params={"sort": "desc", "limit": 20},
                     headers=headers,
                 )
+                if resp.status_code == 429:
+                    logger.warning("[OPENWA POLL] Rate limited (429), backing off")
+                    await asyncio.sleep(10)
+                    continue
                 if resp.status_code != 200:
                     logger.warning("[OPENWA POLL] Messages fetch returned %s", resp.status_code)
                     await asyncio.sleep(5)
@@ -232,7 +233,6 @@ def _parse_wa_message(raw: str) -> dict[str, Any]:
                     extract_value(item)
 
         extract_value(data)
-        logger.info("[PARSE] contacts=%s messages=%s", contacts, messages)
 
         phone = (
             (messages[0].get("from") if messages else "")
@@ -382,26 +382,6 @@ async def _worker_wa() -> None:
                 final_msg = f"{payment_note}\n\n{final_msg}" if final_msg else payment_note
 
             final_msg = sanitize_llm_response(final_msg)
-
-            final_msg = re.sub(r"<environment_details>.*?</environment_details>", "", final_msg, flags=re.DOTALL)
-            final_msg = re.sub(r"<environment_details>.*", "", final_msg, flags=re.DOTALL)
-            final_msg = re.sub(r"<system>.*?</system>", "", final_msg, flags=re.DOTALL)
-            final_msg = re.sub(r"<internal>.*?</internal>", "", final_msg, flags=re.DOTALL)
-            final_msg = re.sub(r"<meta>.*?</meta>", "", final_msg, flags=re.DOTALL)
-            final_msg = re.sub(r"<[^>]+>", "", final_msg)
-            final_msg = re.sub(r"Current time:.*?\n", "", final_msg)
-            final_msg = re.sub(r"Working directory:.*?\n", "", final_msg)
-            final_msg = re.sub(r"Workspace root folder:.*?\n", "", final_msg)
-            final_msg = re.sub(r"Active file:.*?\n", "", final_msg)
-            final_msg = re.sub(r"Visible files:.*?\n", "", final_msg)
-            final_msg = re.sub(r"FECHA Y HORA ACTUAL.*?\n.*?\n.*?\n.*?\n", "", final_msg, flags=re.DOTALL)
-            final_msg = re.sub(r"zona horaria Perú.*?\n", "", final_msg)
-            final_msg = re.sub(r"UTC-5.*?\n", "", final_msg)
-            final_msg = re.sub(r"Ten en cuenta que la fecha actual.*?\n", "", final_msg)
-            final_msg = re.sub(r"\n{3,}", "\n\n", final_msg).strip()
-
-            if "<environment_details>" in final_msg or "Current time" in final_msg:
-                logger.error("[SANITIZE LEAK] STILL PRESENT after all passes! phone=%s preview=%s", phone, final_msg[:400].replace('\n', ' '))
 
             logger.info("[WA WORKER] Reply a %s (%d chars): %s", phone, len(final_msg), final_msg)
             await _send_wa_message(phone, final_msg)

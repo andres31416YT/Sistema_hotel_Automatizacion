@@ -55,7 +55,7 @@ def is_admin(phone: str) -> bool:
     cleaned = phone.strip()
     admin_list = settings.admin_phones_list
     result = cleaned in admin_list
-    logger.info("[ADMIN_CHECK] phone=%s admin_list=%s is_admin=%s", cleaned, admin_list, result)
+    logger.debug("[ADMIN_CHECK] phone=%s is_admin=%s", cleaned, result)
     return result
 
 

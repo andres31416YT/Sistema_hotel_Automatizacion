@@ -54,3 +54,31 @@ else
   echo "[BOOTSTRAP] Failed to find or create session."
   exit 1
 fi
+
+echo "[BOOTSTRAP] Syncing API key and session UUID to core .env..."
+CORE_ENV="/project/services/core/.env"
+if [ -f "$CORE_ENV" ]; then
+  if grep -q '^OPENWA_API_KEY=' "$CORE_ENV"; then
+    grep -v '^OPENWA_API_KEY=' "$CORE_ENV" > "${CORE_ENV}.tmp"
+    echo "OPENWA_API_KEY=${API_KEY}" >> "${CORE_ENV}.tmp"
+    cat "${CORE_ENV}.tmp" > "$CORE_ENV"
+    rm -f "${CORE_ENV}.tmp"
+  else
+    echo "OPENWA_API_KEY=${API_KEY}" >> "$CORE_ENV"
+  fi
+
+  if [ -n "$SESSION_ID" ]; then
+    if grep -q '^OPENWA_SESSION_UUID=' "$CORE_ENV"; then
+      grep -v '^OPENWA_SESSION_UUID=' "$CORE_ENV" > "${CORE_ENV}.tmp"
+      echo "OPENWA_SESSION_UUID=${SESSION_ID}" >> "${CORE_ENV}.tmp"
+      cat "${CORE_ENV}.tmp" > "$CORE_ENV"
+      rm -f "${CORE_ENV}.tmp"
+    else
+      echo "OPENWA_SESSION_UUID=${SESSION_ID}" >> "$CORE_ENV"
+    fi
+  fi
+
+  echo "[BOOTSTRAP] Core .env updated with API key and session UUID."
+else
+  echo "[BOOTSTRAP] WARNING: Core .env not found at $CORE_ENV"
+fi

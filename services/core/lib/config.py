@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     openwa_api_url: str = "http://whatsapp:2785"
     openwa_api_key: str | None = None
     openwa_session_id: str = "hotel"
+    openwa_session_uuid: str | None = None
     openwa_webhook_secret: str | None = None
 
     # Admin
