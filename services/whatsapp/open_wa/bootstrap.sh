@@ -56,6 +56,18 @@ else
 fi
 
 if [ -n "$OPENWA_WEBHOOK_URL" ]; then
+  echo "[BOOTSTRAP] Cleaning old webhooks for session ${SESSION_ID}..."
+  OLD_WEBHOOKS=$(curl -s http://whatsapp:2785/api/sessions/${SESSION_ID}/webhooks -H "X-API-Key: ${API_KEY}")
+  WH_COUNT=$(echo "$OLD_WEBHOOKS" | grep -o '"id":"[^"]*' | wc -l)
+  echo "[BOOTSTRAP] Found ${WH_COUNT} existing webhook(s)."
+
+  if [ "$WH_COUNT" -gt 0 ]; then
+    echo "$OLD_WEBHOOKS" | grep -o '"id":"[^"]*' | cut -d'"' -f4 | while read -r WH_ID; do
+      echo "[BOOTSTRAP] Deleting old webhook: ${WH_ID}"
+      curl -s -X DELETE "http://whatsapp:2785/api/sessions/${SESSION_ID}/webhooks/${WH_ID}" -H "X-API-Key: ${API_KEY}" > /dev/null
+    done
+  fi
+
   echo "[BOOTSTRAP] Registering webhook: ${OPENWA_WEBHOOK_URL}"
   WEBHOOK_RESPONSE=$(curl -s -X POST "http://whatsapp:2785/api/sessions/${SESSION_ID}/webhooks" \
     -H 'Content-Type: application/json' \
