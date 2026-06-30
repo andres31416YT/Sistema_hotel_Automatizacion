@@ -125,7 +125,7 @@ async def openwa_webhook(request: Request):
 
     async def _queue():
         try:
-            await redis_client.rPush("whatsapp_in", queued)
+            await redis_client.push_whatsapp(queued)
             logger.info("[OPENWA WEBHOOK] Event queued: %s", payload.get("event"))
         except Exception as exc:
             logger.error("[OPENWA WEBHOOK] Failed to queue event: %s", exc)
