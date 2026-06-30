@@ -27,7 +27,7 @@
 
 **Integraciones**
 * AI agents
-* Whatsapp API
+* OpenWa
 * Pasarela de pagos
 
 ---
@@ -37,7 +37,7 @@
 **Servicios internos**
 * Docker
 * Ollama
-* Ai model Qwen2.5-3B-Instruct
+* Ai model Qwen2.5-7B-Instruct
 * Whatsapp Webhook
 * PostgreSQL
 * Redis
@@ -70,7 +70,7 @@
 | Herramienta | Docker | Link |
 |-----------|-----------|-----------|
 | Ollama    | ollama/ollama    | -    |
-| Qwen2.5-3B-Instruct    | -    |  https://huggingface.co/Qwen/Qwen2.5-3B-Instruct    |
+| Qwen2.5-7B-Instruct    | -    |  https://huggingface.co/Qwen/Qwen2.5-7B-Instruct    |
 | Whatsapp API    | ghcr.io/rmyndharis/openwa:latest    | https://github.com/rmyndharis/OpenWA |
 | PostgreSQL    | postgres:16-alpine    | -    |
 | PostgreSQL/PGVector    | pgvector/pgvector:16-pgvector    | -    |
