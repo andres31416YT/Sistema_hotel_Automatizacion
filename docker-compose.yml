@@ -7,6 +7,19 @@ services:
     ports:
       - "4041:4040"
 
+  ngrok-whatsapp:
+    image: ngrok/ngrok:3
+    command: http whatsapp:2785
+    env_file:
+      - ./services/ngrok/tunel_wh_whatsapp/.env
+    ports:
+      - "4042:4040"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4040/api/tunnels"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
   whatsapp:
     image: ghcr.io/rmyndharis/openwa:latest
     ports:
@@ -23,11 +36,20 @@ services:
       timeout: 3s
       retries: 10
 
+  ngrok-core:
+    image: ngrok/ngrok:3
+    command: http core:8080
+    env_file:
+      - ./services/ngrok/tunel_core/.env
+    ports:
+      - "4043:4040"
+
   openwa-bootstrap:
     image: curlimages/curl:latest
     depends_on:
-      whatsapp:
-        condition: service_healthy
+      - whatsapp
+      - ngrok-whatsapp
+      - ngrok-core-webhook-setup
     env_file:
       - ./services/whatsapp/open_wa/.env
     user: root
@@ -36,6 +58,19 @@ services:
       - ./services/whatsapp/open_wa/bootstrap.sh:/bootstrap.sh:ro
       - ./services/core/.env:/project/services/core/.env:rw
     entrypoint: ["sh", "/bootstrap.sh"]
+    restart: "no"
+
+  ngrok-core-webhook-setup:
+    image: curlimages/curl:latest
+    depends_on:
+      - ngrok-core
+    env_file:
+      - ./services/ngrok/tunel_core/.env
+    user: root
+    volumes:
+      - ./services/ngrok/tunel_core/setup_core_webhook.sh:/setup_core_webhook.sh:ro
+      - ./services/whatsapp/open_wa/.env:/project/services/whatsapp/open_wa/.env:rw
+    entrypoint: ["sh", "/setup_core_webhook.sh"]
     restart: "no"
 
   payment-webhook:

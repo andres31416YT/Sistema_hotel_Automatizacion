@@ -201,12 +201,14 @@ async def openwa_webhook(request: Request):
     normalized = _normalize_openwa_event_to_meta(payload)
     queued = json.dumps(normalized)
 
-    try:
-        await redis_client.rPush("whatsapp_in", queued)
-        logger.info("[OPENWA WEBHOOK] Event queued: %s", payload.get("event"))
-    except Exception as exc:
-        logger.error("[OPENWA WEBHOOK] Failed to queue event: %s", exc)
+    async def _queue():
+        try:
+            await redis_client.rPush("whatsapp_in", queued)
+            logger.info("[OPENWA WEBHOOK] Event queued: %s", payload.get("event"))
+        except Exception as exc:
+            logger.error("[OPENWA WEBHOOK] Failed to queue event: %s", exc)
 
+    asyncio.create_task(_queue())
     return {"status": "queued"}
 
 

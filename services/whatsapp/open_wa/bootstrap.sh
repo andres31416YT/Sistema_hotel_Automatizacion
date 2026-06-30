@@ -55,6 +55,17 @@ else
   exit 1
 fi
 
+if [ -n "$OPENWA_WEBHOOK_URL" ]; then
+  echo "[BOOTSTRAP] Registering webhook: ${OPENWA_WEBHOOK_URL}"
+  WEBHOOK_RESPONSE=$(curl -s -X POST "http://whatsapp:2785/api/sessions/${SESSION_ID}/webhooks" \
+    -H 'Content-Type: application/json' \
+    -H "X-API-Key: ${API_KEY}" \
+    -d "{\"url\": \"${OPENWA_WEBHOOK_URL}\", \"events\": [\"message.received\"]}")
+  echo "[BOOTSTRAP] Webhook registration response: $WEBHOOK_RESPONSE"
+else
+  echo "[BOOTSTRAP] No OPENWA_WEBHOOK_URL defined, skipping webhook registration."
+fi
+
 echo "[BOOTSTRAP] Syncing API key and session UUID to core .env..."
 CORE_ENV="/project/services/core/.env"
 if [ -f "$CORE_ENV" ]; then
