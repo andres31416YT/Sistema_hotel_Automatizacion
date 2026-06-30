@@ -1,12 +1,4 @@
 services:
-  ngrok-whatsapp:
-    image: ngrok/ngrok:3
-    command: http whatsapp-webhook:8000
-    env_file:
-      - ./services/ngrok/tunel_wh_whatsapp/.env
-    ports:
-      - "4040:4040"
-
   ngrok-mercadopago:
     image: ngrok/ngrok:3
     command: http payment-webhook:8002
@@ -15,28 +7,35 @@ services:
     ports:
       - "4041:4040"
 
-  whatsapp-webhook:
-    build:
-      context: ./services/whatsapp/webhook_whatsapp
-      dockerfile: Dockerfile
+  whatsapp:
+    image: ghcr.io/rmyndharis/openwa:latest
+    ports:
+      - "8001:2785"
+    volumes:
+      - whatsapp_data:/app/data
     env_file:
-      - ./services/whatsapp/webhook_whatsapp/.env
+      - ./services/whatsapp/open_wa/.env
     depends_on:
       - redis
-    ports:
-      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:2785/', (r) => { process.exit(r.statusCode === 200 ? 0 : 1); }).on('error', () => process.exit(1));"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
-  whatsapp-sender:
-    build:
-      context: ./services/whatsapp/system_whatsapp_sender
-      dockerfile: Dockerfile
-    env_file:
-      - ./services/whatsapp/system_whatsapp_sender/.env
+  openwa-bootstrap:
+    image: curlimages/curl:latest
     depends_on:
-      - redis
-      - core
-    ports:
-      - "8001:8001"
+      whatsapp:
+        condition: service_healthy
+    env_file:
+      - ./services/whatsapp/open_wa/.env
+    user: root
+    volumes:
+      - whatsapp_data:/app/data
+      - ./services/whatsapp/open_wa/bootstrap.sh:/bootstrap.sh:ro
+    entrypoint: ["sh", "/bootstrap.sh"]
+    restart: "no"
 
   payment-webhook:
     build:
@@ -148,3 +147,4 @@ volumes:
   db_payments_data:
   db_rag_data:
   core_data:
+  whatsapp_data:

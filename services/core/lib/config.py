@@ -45,13 +45,18 @@ class Settings(BaseSettings):
     redis_ttl_security: int = 3600
 
     # External URLs
-    system_whatsapp_sender_url: str = "http://whatsapp-sender:8001"
     system_payment_url: str = "http://payment-system:8003"
 
     # Mercado Pago
     mp_access_token: str | None = None
     mp_api_url: str = "https://api.mercadopago.com"
     mp_sandbox: bool = True
+
+    # OpenWA
+    openwa_api_url: str = "http://whatsapp:2785"
+    openwa_api_key: str | None = None
+    openwa_session_id: str = "hotel"
+    openwa_webhook_secret: str | None = None
 
     # Admin
     admin_phones: str = ""

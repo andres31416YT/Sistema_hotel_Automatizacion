@@ -2,13 +2,15 @@
 import os
 import re
 import json
+import hashlib
+import hmac
 import logging
 import asyncio
 from typing import Any
 
 import httpx
 import redis
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 
 from lib.config import settings
@@ -32,16 +34,182 @@ async def root():
     return {"service": "core", "status": "running", "port": settings.core_port}
 
 
-# ── WhatsApp helpers ───────────────────────────────────────────────────────────
+# ── OpenWA helpers ────────────────────────────────────────────────────────────
+
+def _normalize_chat_id(phone: str) -> str:
+    digits = re.sub(r'\D', '', phone or '')
+    if not digits:
+        return phone
+    return f"{digits}@c.us"
+
 
 async def _send_wa_message(to: str, text: str) -> None:
-    url = f"{settings.system_whatsapp_sender_url}/send-message"
-    payload = {"to": to, "type": "text", "text": {"body": text}}
+    chat_id = _normalize_chat_id(to)
+    url = f"{settings.openwa_api_url}/api/sessions/{settings.openwa_session_id}/messages/send-text"
+    payload = {"chatId": chat_id, "text": text}
+    headers = {"Content-Type": "application/json"}
+    if settings.openwa_api_key:
+        headers["X-API-Key"] = settings.openwa_api_key
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.post(url, json=payload)
+        resp = await client.post(url, json=payload, headers=headers)
         if resp.status_code >= 400:
             logger.error("send_wa failed: %s %s", resp.status_code, resp.text)
 
+
+async def _setup_openwa() -> None:
+    base = settings.openwa_api_url.rstrip('/')
+    headers = {"Content-Type": "application/json"}
+    if settings.openwa_api_key:
+        headers["X-API-Key"] = settings.openwa_api_key
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            resp = await client.post(f"{base}/api/sessions", json={"name": settings.openwa_session_id}, headers=headers)
+            if resp.status_code == 409:
+                logger.info("[OPENWA] Session already exists: %s", settings.openwa_session_id)
+            elif resp.status_code >= 400:
+                logger.warning("[OPENWA] Session creation returned %s: %s", resp.status_code, resp.text[:200])
+            else:
+                logger.info("[OPENWA] Session ensured: %s", settings.openwa_session_id)
+        except Exception as exc:
+            logger.error("[OPENWA] Session setup failed: %s", exc)
+            return
+
+
+async def _poll_openwa() -> None:
+    logger.info("[OPENWA POLL] Iniciado")
+    last_ts_key = f"openwa_last_timestamp:{settings.openwa_session_id}"
+    while True:
+        try:
+            base = settings.openwa_api_url.rstrip('/')
+            headers = {"Content-Type": "application/json"}
+            if settings.openwa_api_key:
+                headers["X-API-Key"] = settings.openwa_api_key
+
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    f"{base}/api/sessions/{settings.openwa_session_id}/messages",
+                    params={"sort": "desc", "limit": 20},
+                    headers=headers,
+                )
+                if resp.status_code != 200:
+                    logger.warning("[OPENWA POLL] Messages fetch returned %s", resp.status_code)
+                    await asyncio.sleep(5)
+                    continue
+
+                data = resp.json()
+                messages = data.get("messages", [])
+                if not messages:
+                    await asyncio.sleep(3)
+                    continue
+
+                last_ts = await redis_client.get(last_ts_key) or "0"
+                new_messages = []
+                for msg in reversed(messages):
+                    ts = str(msg.get("timestamp", 0))
+                    if ts > last_ts:
+                        new_messages.append(msg)
+
+                if not new_messages:
+                    await asyncio.sleep(3)
+                    continue
+
+                for msg in new_messages:
+                    sender = msg.get("from", "")
+                    phone = re.sub(r'@.*', '', sender or '')
+                    if not phone:
+                        continue
+                    body = msg.get("body", "") or ""
+                    if not body:
+                        continue
+
+                    normalized = {
+                        "contacts": [{"profile": {"name": phone}, "wa_id": phone}],
+                        "messages": [{"from": phone, "text": {"body": body}}],
+                    }
+
+                    try:
+                        await redis_client.rPush("whatsapp_in", json.dumps(normalized))
+                        logger.info("[OPENWA POLL] Queued message from %s", phone)
+                    except Exception as exc:
+                        logger.error("[OPENWA POLL] Failed to queue message: %s", exc)
+
+                latest_ts = new_messages[-1].get("timestamp", 0)
+                await redis_client.set(last_ts_key, str(latest_ts))
+
+            await asyncio.sleep(3)
+
+        except Exception as exc:
+            logger.error("[OPENWA POLL] Error: %s", exc, exc_info=True)
+            await asyncio.sleep(5)
+
+
+def _verify_hmac_signature(raw_body: bytes, signature: str | None, secret: str | None) -> bool:
+    if not secret:
+        return True
+    if not signature:
+        return False
+    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
+def _normalize_openwa_event_to_meta(payload: dict[str, Any]) -> dict[str, Any]:
+    event = payload.get("event", "")
+    data = payload.get("data") or {}
+    if event != "message.received" or not isinstance(data, dict):
+        return payload
+
+    sender = data.get("from", "")
+    phone = re.sub(r'@.*', '', sender or '')
+    pushname = data.get("pushname", "")
+    name = pushname or phone
+    body = data.get("body", " ") or " "
+
+    return {
+        "contacts": [
+            {
+                "profile": {"name": name},
+                "wa_id": phone,
+            }
+        ],
+        "messages": [
+            {
+                "from": phone,
+                "text": {"body": body},
+            }
+        ],
+    }
+
+
+# ── OpenWA webhook endpoint ───────────────────────────────────────────────────
+
+@app.post("/webhooks/openwa")
+async def openwa_webhook(request: Request):
+    raw = await request.body()
+
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    signature = request.headers.get("X-Hub-Signature-256") or request.headers.get("X-OpenWA-Signature")
+    if not _verify_hmac_signature(raw, signature, settings.openwa_webhook_secret):
+        logger.warning("[OPENWA WEBHOOK] Invalid or missing HMAC signature")
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    normalized = _normalize_openwa_event_to_meta(payload)
+    queued = json.dumps(normalized)
+
+    try:
+        await redis_client.rPush("whatsapp_in", queued)
+        logger.info("[OPENWA WEBHOOK] Event queued: %s", payload.get("event"))
+    except Exception as exc:
+        logger.error("[OPENWA WEBHOOK] Failed to queue event: %s", exc)
+
+    return {"status": "queued"}
+
+
+# ── WhatsApp message parsing ──────────────────────────────────────────────────
 
 def _parse_wa_message(raw: str) -> dict[str, Any]:
     try:
@@ -265,6 +433,7 @@ async def _launch_worker():
     get_admin_phones()
     asyncio.create_task(_warm_schema())
     asyncio.create_task(_worker_wa())
+    asyncio.create_task(_poll_openwa())
     logger.info("[STARTUP] Worker WA lanzado")
 
 
