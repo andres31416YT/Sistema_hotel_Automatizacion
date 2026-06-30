@@ -80,13 +80,15 @@ FULL_WEBHOOK_URL="${PUBLIC_URL}${WEBHOOK_PATH}"
 echo "[BOOTSTRAP] Full webhook URL: ${FULL_WEBHOOK_URL}"
 
 if [ -f "$OPENWA_ENV_FILE" ]; then
+  TMP_FILE=$(mktemp)
   if grep -q '^OPENWA_WEBHOOK_URL=' "$OPENWA_ENV_FILE"; then
-    grep -v '^OPENWA_WEBHOOK_URL=' "$OPENWA_ENV_FILE" > "${OPENWA_ENV_FILE}.tmp"
-    echo "OPENWA_WEBHOOK_URL=${FULL_WEBHOOK_URL}" >> "${OPENWA_ENV_FILE}.tmp"
-    mv "${OPENWA_ENV_FILE}.tmp" "$OPENWA_ENV_FILE"
+    grep -v '^OPENWA_WEBHOOK_URL=' "$OPENWA_ENV_FILE" > "$TMP_FILE"
+    echo "OPENWA_WEBHOOK_URL=${FULL_WEBHOOK_URL}" >> "$TMP_FILE"
   else
-    echo "OPENWA_WEBHOOK_URL=${FULL_WEBHOOK_URL}" > "$OPENWA_ENV_FILE"
+    echo "OPENWA_WEBHOOK_URL=${FULL_WEBHOOK_URL}" > "$TMP_FILE"
   fi
+  cat "$TMP_FILE" > "$OPENWA_ENV_FILE"
+  rm -f "$TMP_FILE"
   echo "[BOOTSTRAP] OpenWA .env updated with webhook URL."
 else
   echo "[BOOTSTRAP] WARNING: OpenWA .env not found at $OPENWA_ENV_FILE"
@@ -114,14 +116,15 @@ echo "[BOOTSTRAP] Webhook registration response: $WEBHOOK_RESPONSE"
 echo "[BOOTSTRAP] Syncing API key and session UUID to core .env..."
 CORE_ENV="/project/services/core/.env"
 if [ -f "$CORE_ENV" ]; then
-  grep -v '^OPENWA_API_KEY=' "$CORE_ENV" > "${CORE_ENV}.tmp" || true
-  grep -v '^OPENWA_SESSION_UUID=' "${CORE_ENV}.tmp" > "${CORE_ENV}.tmp2" || true
-  echo "OPENWA_API_KEY=${API_KEY}" >> "${CORE_ENV}.tmp2"
+  TMP_FILE=$(mktemp)
+  grep -v '^OPENWA_API_KEY=' "$CORE_ENV" > "$TMP_FILE" || true
+  grep -v '^OPENWA_SESSION_UUID=' "$TMP_FILE" > "${TMP_FILE}2" || true
+  echo "OPENWA_API_KEY=${API_KEY}" >> "${TMP_FILE}2"
   if [ -n "$SESSION_ID" ]; then
-    echo "OPENWA_SESSION_UUID=${SESSION_ID}" >> "${CORE_ENV}.tmp2"
+    echo "OPENWA_SESSION_UUID=${SESSION_ID}" >> "${TMP_FILE}2"
   fi
-  mv "${CORE_ENV}.tmp2" "$CORE_ENV"
-  rm -f "${CORE_ENV}.tmp"
+  cat "${TMP_FILE}2" > "$CORE_ENV"
+  rm -f "$TMP_FILE" "${TMP_FILE}2"
   echo "[BOOTSTRAP] Core .env updated with API key and session UUID."
 else
   echo "[BOOTSTRAP] WARNING: Core .env not found at $CORE_ENV"
