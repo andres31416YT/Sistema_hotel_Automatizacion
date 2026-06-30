@@ -48,29 +48,16 @@ services:
     image: curlimages/curl:latest
     depends_on:
       - whatsapp
-      - ngrok-whatsapp
-      - ngrok-core-webhook-setup
+      - ngrok-core
     env_file:
       - ./services/whatsapp/open_wa/.env
     user: root
     volumes:
       - whatsapp_data:/app/data
       - ./services/whatsapp/open_wa/bootstrap.sh:/bootstrap.sh:ro
+      - ./services/whatsapp/open_wa/.env:/project/services/whatsapp/open_wa/.env:rw
       - ./services/core/.env:/project/services/core/.env:rw
     entrypoint: ["sh", "/bootstrap.sh"]
-    restart: "no"
-
-  ngrok-core-webhook-setup:
-    image: curlimages/curl:latest
-    depends_on:
-      - ngrok-core
-    env_file:
-      - ./services/ngrok/tunel_core/.env
-    user: root
-    volumes:
-      - ./services/ngrok/tunel_core/setup_core_webhook.sh:/setup_core_webhook.sh:ro
-      - ./services/whatsapp/open_wa/.env:/project/services/whatsapp/open_wa/.env:rw
-    entrypoint: ["sh", "/setup_core_webhook.sh"]
     restart: "no"
 
   payment-webhook:

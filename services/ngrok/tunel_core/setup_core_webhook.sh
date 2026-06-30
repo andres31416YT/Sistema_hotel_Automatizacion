@@ -30,10 +30,9 @@ if [ -f "$OPENWA_ENV_FILE" ]; then
   if grep -q '^OPENWA_WEBHOOK_URL=' "$OPENWA_ENV_FILE"; then
     grep -v '^OPENWA_WEBHOOK_URL=' "$OPENWA_ENV_FILE" > "${OPENWA_ENV_FILE}.tmp"
     echo "OPENWA_WEBHOOK_URL=${FULL_WEBHOOK_URL}" >> "${OPENWA_ENV_FILE}.tmp"
-    cat "${OPENWA_ENV_FILE}.tmp" > "$OPENWA_ENV_FILE"
-    rm -f "${OPENWA_ENV_FILE}.tmp"
+    mv "${OPENWA_ENV_FILE}.tmp" "$OPENWA_ENV_FILE"
   else
-    echo "OPENWA_WEBHOOK_URL=${FULL_WEBHOOK_URL}" >> "$OPENWA_ENV_FILE"
+    echo "OPENWA_WEBHOOK_URL=${FULL_WEBHOOK_URL}" > "$OPENWA_ENV_FILE"
   fi
   echo "[NGROK-CORE-WEBHOOK] Updated OpenWA .env with webhook URL."
 else

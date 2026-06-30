@@ -3,6 +3,9 @@ set -e
 
 SESSION_NAME="${OPENWA_SESSION_ID:-bot-apr}"
 EXPECTED_KEY="${OPENWA_API_KEY:-dev-admin-key}"
+NGROK_API_URL="${NGROK_API_URL:-http://ngrok-core:4040}"
+OPENWA_ENV_FILE="/project/services/whatsapp/open_wa/.env"
+WEBHOOK_PATH="/webhooks/openwa"
 
 echo "[BOOTSTRAP] Waiting for OpenWA to be ready..."
 for i in $(seq 1 30); do
@@ -55,52 +58,70 @@ else
   exit 1
 fi
 
-if [ -n "$OPENWA_WEBHOOK_URL" ]; then
-  echo "[BOOTSTRAP] Cleaning old webhooks for session ${SESSION_ID}..."
-  OLD_WEBHOOKS=$(curl -s http://whatsapp:2785/api/sessions/${SESSION_ID}/webhooks -H "X-API-Key: ${API_KEY}")
-  WH_COUNT=$(echo "$OLD_WEBHOOKS" | grep -o '"id":"[^"]*' | wc -l)
-  echo "[BOOTSTRAP] Found ${WH_COUNT} existing webhook(s)."
-
-  if [ "$WH_COUNT" -gt 0 ]; then
-    echo "$OLD_WEBHOOKS" | grep -o '"id":"[^"]*' | cut -d'"' -f4 | while read -r WH_ID; do
-      echo "[BOOTSTRAP] Deleting old webhook: ${WH_ID}"
-      curl -s -X DELETE "http://whatsapp:2785/api/sessions/${SESSION_ID}/webhooks/${WH_ID}" -H "X-API-Key: ${API_KEY}" > /dev/null
-    done
+echo "[BOOTSTRAP] Detecting ngrok public URL..."
+for i in $(seq 1 60); do
+  if curl -sf "${NGROK_API_URL}/api/tunnels" > /dev/null 2>&1; then
+    echo "[BOOTSTRAP] ngrok API is ready."
+    break
   fi
+  sleep 1
+done
 
-  echo "[BOOTSTRAP] Registering webhook: ${OPENWA_WEBHOOK_URL}"
-  WEBHOOK_RESPONSE=$(curl -s -X POST "http://whatsapp:2785/api/sessions/${SESSION_ID}/webhooks" \
-    -H 'Content-Type: application/json' \
-    -H "X-API-Key: ${API_KEY}" \
-    -d "{\"url\": \"${OPENWA_WEBHOOK_URL}\", \"events\": [\"message.received\"]}")
-  echo "[BOOTSTRAP] Webhook registration response: $WEBHOOK_RESPONSE"
-else
-  echo "[BOOTSTRAP] No OPENWA_WEBHOOK_URL defined, skipping webhook registration."
+PUBLIC_URL=$(curl -sf "${NGROK_API_URL}/api/tunnels" | grep -o '"public_url":"[^"]*' | head -1 | cut -d'"' -f4)
+
+if [ -z "$PUBLIC_URL" ]; then
+  echo "[BOOTSTRAP] ERROR: Could not detect ngrok public URL."
+  exit 1
 fi
+
+echo "[BOOTSTRAP] Detected public URL: ${PUBLIC_URL}"
+
+FULL_WEBHOOK_URL="${PUBLIC_URL}${WEBHOOK_PATH}"
+echo "[BOOTSTRAP] Full webhook URL: ${FULL_WEBHOOK_URL}"
+
+if [ -f "$OPENWA_ENV_FILE" ]; then
+  if grep -q '^OPENWA_WEBHOOK_URL=' "$OPENWA_ENV_FILE"; then
+    grep -v '^OPENWA_WEBHOOK_URL=' "$OPENWA_ENV_FILE" > "${OPENWA_ENV_FILE}.tmp"
+    echo "OPENWA_WEBHOOK_URL=${FULL_WEBHOOK_URL}" >> "${OPENWA_ENV_FILE}.tmp"
+    mv "${OPENWA_ENV_FILE}.tmp" "$OPENWA_ENV_FILE"
+  else
+    echo "OPENWA_WEBHOOK_URL=${FULL_WEBHOOK_URL}" > "$OPENWA_ENV_FILE"
+  fi
+  echo "[BOOTSTRAP] OpenWA .env updated with webhook URL."
+else
+  echo "[BOOTSTRAP] WARNING: OpenWA .env not found at $OPENWA_ENV_FILE"
+fi
+
+echo "[BOOTSTRAP] Cleaning old webhooks for session ${SESSION_ID}..."
+OLD_WEBHOOKS=$(curl -s http://whatsapp:2785/api/sessions/${SESSION_ID}/webhooks -H "X-API-Key: ${API_KEY}")
+WH_COUNT=$(echo "$OLD_WEBHOOKS" | grep -o '"id":"[^"]*' | wc -l)
+echo "[BOOTSTRAP] Found ${WH_COUNT} existing webhook(s)."
+
+if [ "$WH_COUNT" -gt 0 ]; then
+  echo "$OLD_WEBHOOKS" | grep -o '"id":"[^"]*' | cut -d'"' -f4 | while read -r WH_ID; do
+    echo "[BOOTSTRAP] Deleting old webhook: ${WH_ID}"
+    curl -s -X DELETE "http://whatsapp:2785/api/sessions/${SESSION_ID}/webhooks/${WH_ID}" -H "X-API-Key: ${API_KEY}" > /dev/null
+  done
+fi
+
+echo "[BOOTSTRAP] Registering webhook: ${FULL_WEBHOOK_URL}"
+WEBHOOK_RESPONSE=$(curl -s -X POST "http://whatsapp:2785/api/sessions/${SESSION_ID}/webhooks" \
+  -H 'Content-Type: application/json' \
+  -H "X-API-Key: ${API_KEY}" \
+  -d "{\"url\": \"${FULL_WEBHOOK_URL}\", \"events\": [\"message.received\"]}")
+echo "[BOOTSTRAP] Webhook registration response: $WEBHOOK_RESPONSE"
 
 echo "[BOOTSTRAP] Syncing API key and session UUID to core .env..."
 CORE_ENV="/project/services/core/.env"
 if [ -f "$CORE_ENV" ]; then
-  if grep -q '^OPENWA_API_KEY=' "$CORE_ENV"; then
-    grep -v '^OPENWA_API_KEY=' "$CORE_ENV" > "${CORE_ENV}.tmp"
-    echo "OPENWA_API_KEY=${API_KEY}" >> "${CORE_ENV}.tmp"
-    cat "${CORE_ENV}.tmp" > "$CORE_ENV"
-    rm -f "${CORE_ENV}.tmp"
-  else
-    echo "OPENWA_API_KEY=${API_KEY}" >> "$CORE_ENV"
-  fi
-
+  grep -v '^OPENWA_API_KEY=' "$CORE_ENV" > "${CORE_ENV}.tmp" || true
+  grep -v '^OPENWA_SESSION_UUID=' "${CORE_ENV}.tmp" > "${CORE_ENV}.tmp2" || true
+  echo "OPENWA_API_KEY=${API_KEY}" >> "${CORE_ENV}.tmp2"
   if [ -n "$SESSION_ID" ]; then
-    if grep -q '^OPENWA_SESSION_UUID=' "$CORE_ENV"; then
-      grep -v '^OPENWA_SESSION_UUID=' "$CORE_ENV" > "${CORE_ENV}.tmp"
-      echo "OPENWA_SESSION_UUID=${SESSION_ID}" >> "${CORE_ENV}.tmp"
-      cat "${CORE_ENV}.tmp" > "$CORE_ENV"
-      rm -f "${CORE_ENV}.tmp"
-    else
-      echo "OPENWA_SESSION_UUID=${SESSION_ID}" >> "$CORE_ENV"
-    fi
+    echo "OPENWA_SESSION_UUID=${SESSION_ID}" >> "${CORE_ENV}.tmp2"
   fi
-
+  mv "${CORE_ENV}.tmp2" "$CORE_ENV"
+  rm -f "${CORE_ENV}.tmp"
   echo "[BOOTSTRAP] Core .env updated with API key and session UUID."
 else
   echo "[BOOTSTRAP] WARNING: Core .env not found at $CORE_ENV"
