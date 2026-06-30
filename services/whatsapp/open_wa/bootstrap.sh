@@ -2,6 +2,7 @@
 set -e
 
 SESSION_NAME="${OPENWA_SESSION_ID:-bot-apr}"
+EXPECTED_KEY="${OPENWA_API_KEY:-dev-admin-key}"
 
 echo "[BOOTSTRAP] Waiting for OpenWA to be ready..."
 for i in $(seq 1 30); do
@@ -14,17 +15,19 @@ done
 
 API_KEY_FILE="/app/data/.api-key"
 if [ -f "$API_KEY_FILE" ]; then
-  API_KEY=$(tr -d '\n' < "$API_KEY_FILE")
-  echo "[BOOTSTRAP] Loaded API key from volume: ${API_KEY:0:12}..."
+  PERSISTED_KEY=$(tr -d '\n' < "$API_KEY_FILE")
+  echo "[BOOTSTRAP] Persisted API key in volume: ${PERSISTED_KEY:0:12}..."
+  if [ "$PERSISTED_KEY" != "$EXPECTED_KEY" ]; then
+    echo "[BOOTSTRAP] WARNING: Persisted key ($PERSISTED_KEY) differs from expected ($EXPECTED_KEY)."
+    echo "[BOOTSTRAP] Using persisted key for this run."
+  fi
+  API_KEY="$PERSISTED_KEY"
 else
-  echo "[BOOTSTRAP] ERROR: API key file not found at $API_KEY_FILE"
-  exit 1
+  echo "[BOOTSTRAP] No persisted key found. First-run mode, expecting ALLOW_DEV_API_KEY to seed dev-admin-key."
+  API_KEY="$EXPECTED_KEY"
 fi
 
-if [ -z "$API_KEY" ]; then
-  echo "[BOOTSTRAP] ERROR: API key is empty."
-  exit 1
-fi
+echo "[BOOTSTRAP] Using API key: ${API_KEY:0:12}..."
 
 echo "[BOOTSTRAP] Ensuring OpenWA session: ${SESSION_NAME}"
 
@@ -43,8 +46,9 @@ fi
 
 if [ -n "$SESSION_ID" ]; then
   echo "[BOOTSTRAP] Starting session: ${SESSION_ID}"
-  curl -s -X POST "http://whatsapp:2785/api/sessions/${SESSION_ID}/start" \
-    -H "X-API-Key: ${API_KEY}"
+  START_RESPONSE=$(curl -s -X POST "http://whatsapp:2785/api/sessions/${SESSION_ID}/start" \
+    -H "X-API-Key: ${API_KEY}")
+  echo "[BOOTSTRAP] Start response: $START_RESPONSE"
   echo "[BOOTSTRAP] Done. Scan QR from dashboard (http://localhost:8001) if not already authenticated."
 else
   echo "[BOOTSTRAP] Failed to find or create session."

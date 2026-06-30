@@ -34,6 +34,7 @@ services:
     volumes:
       - whatsapp_data:/app/data
       - ./services/whatsapp/open_wa/bootstrap.sh:/bootstrap.sh:ro
+      - ./services/core/.env:/project/services/core/.env:rw
     entrypoint: ["sh", "/bootstrap.sh"]
     restart: "no"
 
@@ -72,6 +73,7 @@ services:
       - db_payments
       - db_rag
       - ai
+      - whatsapp
     ports:
       - "8080:8080"
     volumes:
