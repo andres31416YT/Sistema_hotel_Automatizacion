@@ -71,7 +71,7 @@
 |-----------|-----------|-----------|
 | Ollama    | ollama/ollama    | -    |
 | Qwen2.5-7B-Instruct    | -    |  https://huggingface.co/Qwen/Qwen2.5-7B-Instruct    |
-| Whatsapp API    | ghcr.io/rmyndharis/openwa:latest    | https://github.com/rmyndharis/OpenWA |
+| Open Wa    | ghcr.io/rmyndharis/openwa:latest    | https://github.com/rmyndharis/OpenWA |
 | PostgreSQL    | postgres:16-alpine    | -    |
 | PostgreSQL/PGVector    | pgvector/pgvector:16-pgvector    | -    |
 | Turbovec    | -   | https://github.com/RyanCodrai/turbovec |
