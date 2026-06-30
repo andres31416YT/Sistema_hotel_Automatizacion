@@ -52,6 +52,13 @@ class RedisClient:
             logger.warning("History error for %s: %s", phone, exc)
             return []
 
+    async def save_inbound(self, phone: str, message: str) -> None:
+        r = await self.connect()
+        key = f"chat_history:{phone}"
+        turn = json.dumps({"role": "user", "content": message}, ensure_ascii=False)
+        await r.rpush(key, turn)
+        await r.expire(key, settings.redis_ttl_chat)
+
     async def save_turn(self, phone: str, user_msg: str, assistant_msg: str) -> None:
         r = await self.connect()
         key = f"chat_history:{phone}"

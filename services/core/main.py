@@ -27,11 +27,6 @@ admin_graph = build_admin_graph()
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _get_openwa_session_id() -> str:
-    """Return the effective OpenWA session identifier (UUID preferred, fallback to name)."""
-    return settings.openwa_session_uuid or settings.openwa_session_id
-
-
 def _normalize_chat_id(phone: str) -> str:
     digits = re.sub(r'\D', '', phone or '')
     if not digits:
@@ -41,7 +36,7 @@ def _normalize_chat_id(phone: str) -> str:
 
 async def _send_wa_message(to: str, text: str) -> None:
     chat_id = _normalize_chat_id(to)
-    session_id = _get_openwa_session_id()
+    session_id = settings.openwa_session_uuid or settings.openwa_session_id
     url = f"{settings.openwa_api_url}/api/sessions/{session_id}/messages/send-text"
     payload = {"chatId": chat_id, "text": text}
     headers = {"Content-Type": "application/json"}
@@ -70,79 +65,6 @@ async def _setup_openwa() -> None:
                 logger.info("[OPENWA] Session ensured: %s", settings.openwa_session_id)
         except Exception as exc:
             logger.error("[OPENWA] Session setup failed: %s", exc)
-
-
-async def _poll_openwa() -> None:
-    logger.info("[OPENWA POLL] Iniciado")
-    session_id = _get_openwa_session_id()
-    last_ts_key = f"openwa_last_timestamp:{settings.openwa_session_id}"
-    while True:
-        try:
-            base = settings.openwa_api_url.rstrip('/')
-            headers = {"Content-Type": "application/json"}
-            if settings.openwa_api_key:
-                headers["X-API-Key"] = settings.openwa_api_key
-
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(
-                    f"{base}/api/sessions/{session_id}/messages",
-                    params={"sort": "desc", "limit": 20},
-                    headers=headers,
-                )
-                if resp.status_code == 429:
-                    logger.warning("[OPENWA POLL] Rate limited (429), backing off")
-                    await asyncio.sleep(10)
-                    continue
-                if resp.status_code != 200:
-                    logger.warning("[OPENWA POLL] Messages fetch returned %s", resp.status_code)
-                    await asyncio.sleep(5)
-                    continue
-
-                data = resp.json()
-                messages = data.get("messages", [])
-                if not messages:
-                    await asyncio.sleep(3)
-                    continue
-
-                last_ts = await redis_client.get(last_ts_key) or "0"
-                new_messages = []
-                for msg in reversed(messages):
-                    ts = str(msg.get("timestamp", 0))
-                    if ts > last_ts:
-                        new_messages.append(msg)
-
-                if not new_messages:
-                    await asyncio.sleep(3)
-                    continue
-
-                for msg in new_messages:
-                    sender = msg.get("from", "")
-                    phone = re.sub(r'@.*', '', sender or '')
-                    if not phone:
-                        continue
-                    body = msg.get("body", "") or ""
-                    if not body:
-                        continue
-
-                    normalized = {
-                        "contacts": [{"profile": {"name": phone}, "wa_id": phone}],
-                        "messages": [{"from": phone, "text": {"body": body}}],
-                    }
-
-                    try:
-                        await redis_client.rPush("whatsapp_in", json.dumps(normalized))
-                        logger.info("[OPENWA POLL] Queued message from %s", phone)
-                    except Exception as exc:
-                        logger.error("[OPENWA POLL] Failed to queue message: %s", exc)
-
-                latest_ts = new_messages[-1].get("timestamp", 0)
-                await redis_client.set(last_ts_key, str(latest_ts))
-
-            await asyncio.sleep(3)
-
-        except Exception as exc:
-            logger.error("[OPENWA POLL] Error: %s", exc, exc_info=True)
-            await asyncio.sleep(5)
 
 
 def _verify_hmac_signature(raw_body: bytes, signature: str | None, secret: str | None) -> bool:
@@ -209,6 +131,21 @@ async def openwa_webhook(request: Request):
             logger.error("[OPENWA WEBHOOK] Failed to queue event: %s", exc)
 
     asyncio.create_task(_queue())
+
+    # Guardar historial inmediatamente cuando llega el mensaje
+    try:
+        event_data = payload.get("data") or {}
+        event_type = payload.get("event", "")
+        if event_type == "message.received" and isinstance(event_data, dict):
+            sender = event_data.get("from", "")
+            phone = re.sub(r'@.*', '', sender or '')
+            body = event_data.get("body", "") or ""
+            if phone and body:
+                await redis_client.save_inbound(phone, body)
+                logger.info("[OPENWA WEBHOOK] Inbound message saved for %s", phone)
+    except Exception as exc:
+        logger.error("[OPENWA WEBHOOK] Failed to save inbound message: %s", exc)
+
     return {"status": "queued"}
 
 
@@ -415,7 +352,6 @@ async def _launch_worker():
     get_admin_phones()
     asyncio.create_task(_warm_schema())
     asyncio.create_task(_worker_wa())
-    asyncio.create_task(_poll_openwa())
     logger.info("[STARTUP] Worker WA lanzado")
 
 
@@ -432,3 +368,4 @@ def get_admin_phones() -> list[str]:
     phones = settings.admin_phones_list
     logger.info("[STARTUP] Admin phones loaded: %s (count=%d)", phones, len(phones))
     return phones
+
