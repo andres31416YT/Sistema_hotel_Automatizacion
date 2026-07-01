@@ -16,6 +16,15 @@ from lib.redis_client import redis_client
 from lib.security import is_admin, validate_sender, validate_message_content, sanitize_name, sanitize_llm_response
 from agents.graph import build_customer_graph, build_admin_graph
 
+# LangSmith tracing setup
+if settings.langsmith_api_key:
+    os.environ["LANGSMITH_API_KEY"] = settings.langsmith_api_key
+    os.environ["LANGCHAIN_TRACING_V2"] = "true"
+    if settings.langsmith_endpoint:
+        os.environ["LANGSMITH_ENDPOINT"] = settings.langsmith_endpoint
+    if settings.langsmith_project:
+        os.environ["LANGSMITH_PROJECT"] = settings.langsmith_project
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 

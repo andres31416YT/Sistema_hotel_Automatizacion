@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     ollama_api_url: str = "http://ollama:11434"
     ollama_model: str = "qwen2.5:3b-instruct"
 
+    # LangSmith
+    langsmith_api_key: str | None = None
+    langsmith_tracing: bool = False
+    langsmith_endpoint: str = "https://api.smith.langchain.com"
+    langsmith_project: str | None = None
+
     # Hotel DB
     db_hotel_host: str = "db_hotel"
     db_hotel_port: int = 5432
