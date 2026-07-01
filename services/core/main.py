@@ -43,18 +43,41 @@ def _normalize_chat_id(phone: str) -> str:
     return f"{digits}@c.us"
 
 
-async def _send_wa_message(to: str, text: str) -> None:
+async def _warm_chat(session_id: str, phone: str, max_retries: int = 3) -> bool:
+    """Pre-warm chat by fetching it first to resolve LID."""
+    headers = {"X-API-Key": settings.openwa_api_key} if settings.openwa_api_key else {}
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                chat_id = _normalize_chat_id(phone)
+                await client.get(
+                    f"{settings.openwa_api_url}/api/sessions/{session_id}/chats/{chat_id}",
+                    headers=headers
+                )
+            return True
+        except Exception:
+            await asyncio.sleep(1)
+    return False
+
+async def _send_wa_message(to: str, text: str) -> bool:
     chat_id = _normalize_chat_id(to)
     session_id = settings.openwa_session_uuid or settings.openwa_session_id
+    
+    # Pre-warm chat to resolve LID
+    await _warm_chat(session_id, to)
+    
     url = f"{settings.openwa_api_url}/api/sessions/{session_id}/messages/send-text"
     payload = {"chatId": chat_id, "text": text}
     headers = {"Content-Type": "application/json"}
     if settings.openwa_api_key:
         headers["X-API-Key"] = settings.openwa_api_key
+    
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(url, json=payload, headers=headers)
         if resp.status_code >= 400:
             logger.error("send_wa failed: %s %s", resp.status_code, resp.text)
+            return False
+        return True
 
 
 async def _setup_openwa() -> None:
