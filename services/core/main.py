@@ -36,20 +36,40 @@ admin_graph = build_admin_graph()
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+# Store original JID in Redis for LID resolution
+async def _store_contact_jid(phone: str, original_jid: str) -> None:
+    r = await redis_client.connect()
+    key = f"contact_jid:{phone}"
+    await r.set(key, original_jid)
+    await r.expire(key, settings.redis_ttl_contact)
+
+# Get stored JID for contact (LID resolution)
+async def _get_contact_jid(phone: str) -> str | None:
+    r = await redis_client.connect()
+    key = f"contact_jid:{phone}"
+    jid = await r.get(key)
+    return jid if jid else None
+
 def _normalize_chat_id(phone: str) -> str:
     digits = re.sub(r'\D', '', phone or '')
     if not digits:
         return phone
     return f"{digits}@c.us"
 
+def _extract_original_jid(from_field: str) -> tuple[str, str | None]:
+    """Extract (phone, jid) from raw from field like '30593152770270@lid' or '30593152770270@c.us'."""
+    phone = re.sub(r'@.*', '', from_field or '')
+    jid = from_field if '@' in from_field else None
+    return phone, jid
 
-async def _warm_chat(session_id: str, phone: str, max_retries: int = 3) -> bool:
+
+async def _warm_chat(session_id: str, phone: str, jid: str | None = None, max_retries: int = 3) -> bool:
     """Pre-warm chat by fetching it first to resolve LID."""
     headers = {"X-API-Key": settings.openwa_api_key} if settings.openwa_api_key else {}
+    chat_id = jid or _normalize_chat_id(phone)
     for attempt in range(max_retries):
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                chat_id = _normalize_chat_id(phone)
                 await client.get(
                     f"{settings.openwa_api_url}/api/sessions/{session_id}/chats/{chat_id}",
                     headers=headers
@@ -59,12 +79,13 @@ async def _warm_chat(session_id: str, phone: str, max_retries: int = 3) -> bool:
             await asyncio.sleep(1)
     return False
 
-async def _send_wa_message(to: str, text: str) -> bool:
-    chat_id = _normalize_chat_id(to)
+async def _send_wa_message(to: str, text: str, original_jid: str | None = None) -> bool:
     session_id = settings.openwa_session_uuid or settings.openwa_session_id
     
-    # Pre-warm chat to resolve LID
-    await _warm_chat(session_id, to)
+    stored_jid = await _get_contact_jid(to)
+    chat_id = stored_jid or original_jid or _normalize_chat_id(to)
+    
+    await _warm_chat(session_id, to, chat_id)
     
     url = f"{settings.openwa_api_url}/api/sessions/{session_id}/messages/send-text"
     payload = {"chatId": chat_id, "text": text}
@@ -115,12 +136,13 @@ def _normalize_openwa_event_to_meta(payload: dict[str, Any]) -> dict[str, Any]:
         return payload
 
     sender = data.get("from", "")
+    _, original_jid = _extract_original_jid(sender)
     phone = re.sub(r'@.*', '', sender or '')
     pushname = data.get("pushname", "")
     name = pushname or phone
     body = data.get("body", " ") or " "
 
-    return {
+    result = {
         "contacts": [
             {
                 "profile": {"name": name},
@@ -134,6 +156,9 @@ def _normalize_openwa_event_to_meta(payload: dict[str, Any]) -> dict[str, Any]:
             }
         ],
     }
+    if original_jid:
+        result["original_jid"] = original_jid
+    return result
 
 
 # ── OpenWA webhook endpoint ───────────────────────────────────────────────────
@@ -151,6 +176,15 @@ async def openwa_webhook(request: Request):
     if not _verify_hmac_signature(raw, signature, settings.openwa_webhook_secret):
         logger.warning("[OPENWA WEBHOOK] Invalid or missing HMAC signature")
         raise HTTPException(status_code=401, detail="Invalid signature")
+
+    # Extract and store original JID for LID resolution
+    event_data = payload.get("data") or {}
+    if event_data and isinstance(event_data, dict):
+        from_raw = event_data.get("from", "")
+        phone, jid = _extract_original_jid(from_raw)
+        if jid and phone:
+            await _store_contact_jid(phone, jid)
+            logger.info("[OPENWA WEBHOOK] Stored JID for %s: %s", phone, jid)
 
     normalized = _normalize_openwa_event_to_meta(payload)
     queued = json.dumps(normalized)
@@ -205,13 +239,14 @@ def _parse_wa_message(raw: str) -> dict[str, Any]:
 
         extract_value(data)
 
-        phone = (
-            (messages[0].get("from") if messages else "")
-            or data.get("phone")
-            or data.get("from")
-            or data.get("sender_id")
-            or (contacts[0].get("wa_id") if contacts else "")
-        )
+        from_raw = (messages[0].get("from") if messages else "") or data.get("from", "")
+        phone, original_jid = _extract_original_jid(from_raw)
+
+        # Check normalized payload for original_jid
+        payload_jid = data.get("original_jid")
+        if payload_jid:
+            original_jid = payload_jid
+
         name = (
             (contacts[0].get("profile", {}).get("name") if contacts else "")
             or data.get("name")
@@ -225,7 +260,7 @@ def _parse_wa_message(raw: str) -> dict[str, Any]:
             or data.get("message", "")
             or ""
         )
-        return {"phone": phone, "name": sanitize_name(name), "text": text}
+        return {"phone": phone, "name": sanitize_name(name), "text": text, "original_jid": original_jid}
     except Exception as exc:
         logger.warning("parse_wa failed: %s | raw=%s", exc, raw[:200])
         return {}
@@ -305,7 +340,8 @@ async def _worker_wa() -> None:
                 continue
             if not validate_message_content(text, phone):
                 logger.warning("[WA WORKER] Contenido bloqueado de %s", phone)
-                await _send_wa_message(phone, "Lo siento, no puedo procesar ese mensaje.")
+                original_jid = msg.get("original_jid")
+                await _send_wa_message(phone, "Lo siento, no puedo procesar ese mensaje.", original_jid)
                 continue
 
             history = await redis_client.get_history(phone)
@@ -355,7 +391,9 @@ async def _worker_wa() -> None:
             final_msg = sanitize_llm_response(final_msg)
 
             logger.info("[WA WORKER] Reply a %s (%d chars): %s", phone, len(final_msg), final_msg)
-            await _send_wa_message(phone, final_msg)
+            stored_jid = await _get_contact_jid(phone)
+            original_jid = msg.get("original_jid")
+            await _send_wa_message(phone, final_msg, stored_jid or original_jid)
             await redis_client.save_turn(phone, text, final_msg)
 
         except Exception as exc:

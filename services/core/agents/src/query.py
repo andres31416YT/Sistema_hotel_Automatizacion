@@ -2,10 +2,9 @@
 import logging
 from langchain_core.tools import tool
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 from lib.ollama import get_llm
-from lib.db import fetch_all, execute_dml, get_hotel_schema, schema_to_text, HOTEL_SCHEMA_TEXT, HOTEL_SCHEMA_LOADED, load_hotel_schema
+from lib.db import fetch_all, execute_dml, HOTEL_SCHEMA_TEXT, HOTEL_SCHEMA_LOADED, load_hotel_schema
 from lib.security import sanitize_llm_response
 
 logger = logging.getLogger(__name__)
@@ -23,30 +22,6 @@ async def _ensure_schema():
     _hotel_schema_text = await load_hotel_schema() or ""
 
 
-CATALOG_TABLES: set[str] = set()
-
-
-def _detect_catalog_tables() -> set[str]:
-    if not _hotel_schema_text:
-        logger.warning("[CATALOG_DETECT] Schema text is empty")
-        return set()
-    tables: set[str] = set()
-    current_table = ""
-    for line in _hotel_schema_text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("Tabla: "):
-            current_table = stripped.split(": ", 1)[1].strip().lower()
-        if "codigo:" in stripped and current_table:
-            tables.add(current_table)
-    logger.info("[CATALOG_DETECT] Detected catalog tables: %s", tables)
-    return tables
-
-
-def _should_exclude_id(query: str) -> bool:
-    """Exclude 'id' column from SELECT results for ALL tables."""
-    return True
-
-
 @tool
 async def execute_sql(query: str) -> str:
     """Execute a read-only SQL query against the hotel database (SELECT, SHOW, WITH)."""
@@ -54,7 +29,7 @@ async def execute_sql(query: str) -> str:
         rows = await fetch_all(query)
         if not rows:
             return "La consulta se ejecutó correctamente pero no hay resultados."
-        exclude_id = _should_exclude_id(query)
+        exclude_id = True
         cols = [c for c in rows[0].keys() if not (exclude_id and c == "id")]
         if not cols:
             cols = list(rows[0].keys())
@@ -62,7 +37,7 @@ async def execute_sql(query: str) -> str:
         for row in rows[:50]:
             lines.append(" | ".join(str(row.get(c, "")) for c in cols))
         result = "\n".join(lines)
-        logger.info("[EXECUTE_SQL] query=%s | rows=%d | exclude_id=%s | result_preview=%s", query[:80], len(rows), exclude_id, result[:200])
+        logger.info("[EXECUTE_SQL] query=%s | rows=%d | result_preview=%s", query[:80], len(rows), result[:200])
         return result
     except Exception as exc:
         return f"Error en consulta SQL: {exc}"
@@ -112,56 +87,33 @@ async def query_node(state: dict) -> dict:
 
     lower_msg = message.lower()
 
-    rule_sql = None
     if any(k in lower_msg for k in ["habitacion", "cuarto", "room"]):
-        rule_sql = (
-            "SELECT rooms.room_number AS numero, tipo_habitacion.nombre AS tipo, "
-            "estado_habitacion.nombre AS estado "
-            "FROM rooms "
-            "JOIN tipo_habitacion ON rooms.id_tipo_hab = tipo_habitacion.id "
-            "JOIN estado_habitacion ON rooms.id_estado_hab = estado_habitacion.id "
-            "ORDER BY rooms.room_number"
-        )
-    elif any(k in lower_msg for k in ["huesped", "cliente", "client"]):
-        rule_sql = "SELECT whatsapp_number, name, doc_identidad FROM clients ORDER BY id"
-    elif any(k in lower_msg for k in ["reserva", "booking", "reservation"]):
-        rule_sql = "SELECT id, client_id, room_id, check_in_date, check_out_date, total_amount FROM reservations ORDER BY id LIMIT 20"
-    elif any(k in lower_msg for k in ["pago", "payment", "transaccion"]):
-        rule_sql = "SELECT id, amount, status, created_at FROM payments ORDER BY created_at DESC LIMIT 20"
-
-    if rule_sql:
         try:
-            rows = await fetch_all(rule_sql)
-            if rows:
-                cols = [c for c in rows[0].keys() if c != "id"]
-                lines = [f"{len(rows)} resultado(s):\n", " | ".join(cols), "|" + "|".join("---" for _ in cols)]
-                for row in rows[:50]:
-                    lines.append(" | ".join(str(row.get(c, "")) for c in cols))
-                sql_result = "\n".join(lines)
-            else:
-                sql_result = "La consulta se ejecutó correctamente pero no hay resultados."
+            rows = await fetch_all(
+                "SELECT rooms.room_number AS numero, tipo_habitacion.nombre AS tipo, "
+                "estado_habitacion.nombre AS estado "
+                "FROM rooms "
+                "JOIN tipo_habitacion ON rooms.id_tipo_hab = tipo_habitacion.id "
+                "JOIN estado_habitacion ON rooms.id_estado_hab = estado_habitacion.id "
+                "ORDER BY rooms.room_number"
+            )
+            cols = [c for c in rows[0].keys() if c != "id"] if rows else []
+            lines = [f"{len(rows)} resultado(s):\n", " | ".join(cols), "|" + "|".join("---" for _ in cols)] if rows else []
+            for row in rows[:50]:
+                lines.append(" | ".join(str(row.get(c, "")) for c in cols))
+            sql_result = "\n".join(lines) if lines else "No hay habitaciones registradas."
         except Exception as exc:
-            sql_result = f"Error en consulta SQL: {exc}"
+            sql_result = f"Error: {exc}"
 
+        llm = get_llm(temperature=0.0)
         lc_messages = [
-            SystemMessage(content=(
-                "IMPORTANTE: Los resultados de las herramientas son la UNICA fuente de informacion valida. "
-                "Tu respuesta debe basarse EXCLUSIVAMENTE en esos resultados. "
-                "NUNCA inventes datos, nunca uses conocimiento general, nunca describas entidades que no aparezcan en los resultados. "
-                "NUNCA muestres IDs numericos al administrador. Solo muestra nombres, codigos y descripciones. "
-                "Si hay filas, presenta ESAS filas tal cual vinieron (sin la columna id si aplica). "
-                "Si no hay resultados, di 'No se encontraron registros'. "
-                "No muestres SQL ni detalles tecnicos al usuario. "
-                "NUNCA uses tablas markdown con pipes (|). Usa listas con guiones simples. "
-                "NUNCA incluyas etiquetas como <environment_details>, <system>, <internal>, <meta>, "
-                "Working directory, Current time, Active file, zona horaria, UTC-5, o cualquier metadato del sistema. "
-                "NUNCA repitas fechas, horas ni zonas horarias en tu respuesta."
-            )),
+            SystemMessage(content="IMPORTANTE: Los resultados de la consulta son la UNICA fuente de informacion. No inventes datos. Usa listas con guiones, no tablas markdown."),
             HumanMessage(content=f"Resultados de la consulta:\n{sql_result}\n\nResponde al usuario con estos datos."),
         ]
         final_response = await llm.ainvoke(lc_messages)
         final_response = getattr(final_response, "content", str(final_response))
         logger.info("Query agent rule-based response (%d chars)", len(final_response))
+        final_response = sanitize_llm_response(final_response)
         return {"agent_response": final_response}
 
     tools = [execute_sql, get_db_schema]
@@ -173,88 +125,43 @@ async def query_node(state: dict) -> dict:
 
     schema_block = f"\n\nESQUEMA DE BASE DE DATOS:\n{_hotel_schema_text}" if _hotel_schema_text else ""
 
-    prompt = ChatPromptTemplate.from_messages([
+    prompt_msgs = [
         ("system", (
             f"{prompt_text}"
             f"{schema_block}\n\n"
-            "IMPORTANTE: Usa SOLO los nombres de tabla y columna que aparecen en el esquema anterior. "
-            "Si el usuario usa lenguaje natural (ej: 'habitaciones', 'reservas', 'huespedes'), "
-            "busca la tabla equivalente en el esquema (rooms, reservations, clients). "
+            "IMPORTANTE: Usa SOLO los nombres de tabla y columna del esquema. "
+            "Si el usuario usa lenguaje natural (ej: 'habitaciones'), busca la tabla equivalente (rooms). "
             "No inventes nombres de tablas.\n\n"
-            "REGLAS DE CONSULTA:\n"
-            "- NUNCA incluyas la columna 'id' en consultas SELECT sobre tablas de catalogo (las que tienen columna 'codigo'). "
-            "El administrador/usuario no necesita ver IDs internos.\n"
-            "- Si una tabla tiene columna 'codigo', usa 'codigo', 'nombre', 'descripcion', 'capacidad', etc. "
-            "en lugar de 'id'.\n"
-            "- Para consultas de insercion (INSERT), tu mismo conviertes los nombres a IDs usando los catalogos.\n"
-            "- NUNCA repitas fechas, horas ni zonas horarias en tu respuesta."
+            "REGLAS: NUNCA incluyas 'id' en SELECT sobre tablas de catalogo. "
+            "NUNCA repitas fechas ni zonas horarias."
         )),
         ("user", message),
-    ])
+    ]
+
+    llm_prompt = ChatPromptTemplate.from_messages(prompt_msgs)
+    response = await (llm_prompt | llm).ainvoke({})
+    tool_calls = getattr(response, "tool_calls", None) or []
 
     tool_results: list[dict] = []
 
-    if tool_calls:
-        for tc in tool_calls:
-            fn_name = tc["name"]
-            args = tc.get("args", {})
-            logger.info("Tool call: %s args=%s", fn_name, args)
-            try:
-                if fn_name == "execute_sql":
-                    result = await execute_sql.ainvoke(args)
-                elif fn_name == "execute_dml":
-                    result = await execute_dml_tool.ainvoke(args)
-                elif fn_name == "get_db_schema":
-                    result = await get_db_schema.ainvoke(args)
-                else:
-                    result = f"Herramienta desconocida: {fn_name}"
-            except Exception as exc:
-                result = f"Error ejecutando {fn_name}: {exc}"
-            tool_results.append({"tool": fn_name, "result": result})
+    for tc in tool_calls:
+        fn_name = tc.get("name", tc.get("function", {}).get("name", ""))
+        args = tc.get("args", tc.get("function", {}).get("arguments", {}))
+        logger.info("Tool call: %s args=%s", fn_name, args)
+        try:
+            if fn_name == "execute_sql":
+                result = await execute_sql.ainvoke(args)
+            elif fn_name == "execute_dml_tool":
+                result = await execute_dml_tool.ainvoke(args)
+            elif fn_name == "get_db_schema":
+                result = await get_db_schema.ainvoke(args)
+            else:
+                result = f"Herramienta desconocida: {fn_name}"
+        except Exception as exc:
+            result = f"Error ejecutando {fn_name}: {exc}"
+        tool_results.append({"tool": fn_name, "result": result})
 
-        schema_loaded = any(t["tool"] == "get_db_schema" for t in tool_results)
-        sql_executed = any(t["tool"] == "execute_sql" for t in tool_results)
-
-        if schema_loaded and not sql_executed:
-            schema_text = next((t["result"] for t in tool_results if t["tool"] == "get_db_schema"), "")
-            force_prompt = ChatPromptTemplate.from_messages([
-                ("system", (
-                    f"Esquema de base de datos:\n{schema_text}\n\n"
-                    "IMPORTANTE: Usa los nombres exactos de tabla y columna del esquema. "
-                    "El usuario pregunta sobre habitaciones. Ejecuta una consulta SELECT contra la tabla 'rooms' "
-                    "unida con 'tipo_habitacion' para mostrar numero, tipo y estado de cada habitacion. "
-                    "NO uses WHERE a menos que el usuario pida filtrar. "
-                    "NO inventes datos. Responde basandote SOLO en los resultados de execute_sql."
-                )),
-                ("user", message),
-            ])
-            force_response = await (force_prompt | llm).ainvoke({})
-            force_calls = getattr(force_response, "tool_calls", None)
-            if force_calls:
-                for tc in force_calls:
-                    fn_name = tc["name"]
-                    args = tc.get("args", {})
-                    logger.info("[QUERY] Forced tool call: %s args=%s", fn_name, args)
-                    try:
-                        if fn_name == "execute_sql":
-                            result = await execute_sql.ainvoke(args)
-                        elif fn_name == "execute_dml":
-                            result = await execute_dml_tool.ainvoke(args)
-                        else:
-                            result = f"Herramienta no esperada en forced: {fn_name}"
-                    except Exception as exc:
-                        result = f"Error ejecutando {fn_name}: {exc}"
-                    tool_results.append({"tool": fn_name, "result": result})
-                    tool_calls.append(tc)
-
-        messages = [
-            {"role": "system", "content": prompt.format_messages()[0].content},
-            {"role": "user", "content": message},
-            {"role": "assistant", "content": "", "tool_calls": tool_calls},
-        ]
-        for tr in tool_results:
-            messages.append({"role": "tool", "tool_call_id": tr["tool"], "content": tr["result"]})
-
+    if tool_calls and tool_results:
         consulted_tables = []
         for tc in tool_calls:
             query = tc.get("args", {}).get("query", "")
@@ -270,7 +177,7 @@ async def query_node(state: dict) -> dict:
             tables_context = f" Las tablas consultadas fueron: {', '.join(consulted_tables)}."
 
         lc_messages = [
-            SystemMessage(content=prompt.format_messages()[0].content),
+            SystemMessage(content=f"{prompt_text}{schema_block}"),
             HumanMessage(content=message),
             AIMessage(content="", tool_calls=tool_calls),
         ]
@@ -278,26 +185,17 @@ async def query_node(state: dict) -> dict:
             lc_messages.append(ToolMessage(content=tr["result"], tool_call_id=tr["tool"]))
         lc_messages.append(SystemMessage(content=(
             "IMPORTANTE: Los resultados de las herramientas son la UNICA fuente de informacion valida. "
-            "Tu respuesta debe basarse EXCLUSIVAMENTE en esos resultados. "
-            "NUNCA inventes datos, nunca uses conocimiento general, nunca describas entidades que no aparezcan en los resultados. "
-            "NUNCA muestres IDs numericos al administrador. Solo muestra nombres, codigos y descripciones. "
-            "Si hay filas, presenta ESAS filas tal cual vinieron (sin la columna id si aplica). "
-            "Si no hay resultados, di 'No se encontraron registros'. "
-            "No muestres SQL ni detalles tecnicos al usuario. "
-            "NUNCA uses tablas markdown con pipes (|). Usa listas con guiones simples. "
-            "NUNCA incluyas etiquetas como <environment_details>, <system>, <internal>, <meta>, "
-            "Working directory, Current time, Active file, zona horaria, UTC-5, o cualquier metadato del sistema. "
-            "NUNCA repitas fechas, horas ni zonas horarias en tu respuesta."
+            "No inventes datos, no uses conocimiento general. "
+            "No muestres SQL ni IDs numericos. Usa listas con guiones. "
+            "NUNCA repitas fechas, horas ni zonas horarias."
             f"{tables_context}"
         )))
         final_response = await llm.ainvoke(lc_messages)
         final_response = getattr(final_response, "content", str(final_response))
+    elif not tool_calls:
+        final_response = "No pude procesar esa consulta. Por favor, intenta de nuevo."
     else:
-        if not tool_calls:
-            logger.warning("[QUERY] No tool calls made after retry, returning safe fallback")
-            final_response = "No pude procesar esa consulta. Por favor, intenta de nuevo."
-        else:
-            final_response = getattr(response, "content", "") or "No pude procesar esa consulta."
+        final_response = getattr(response, "content", "") or "No pude procesar esa consulta."
 
     logger.info("Query agent response (%d chars)", len(final_response))
     final_response = sanitize_llm_response(final_response)

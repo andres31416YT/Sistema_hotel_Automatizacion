@@ -7,7 +7,7 @@ Este servicio ejecuta OpenWA (https://github.com/rmyndharis/OpenWA) como gateway
 Se usa la imagen oficial de GitHub Container Registry (no requiere build local):
 
 ```yaml
-image: ghcr.io/rmyndharis/openwa:latest
+image: ghcr.io/rmyndharis/openwa:0.7.16
 ```
 
 Puerto interno: **2785** (mapeado a **8001** en docker-compose).

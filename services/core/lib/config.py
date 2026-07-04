@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     redis_ttl_profile: int = 86400
     redis_ttl_payment: int = 900
     redis_ttl_security: int = 3600
+    redis_ttl_contact: int = 86400  # JID cache for LID resolution
 
     # External URLs
     system_payment_url: str = "http://payment-system:8003"
